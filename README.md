@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> **This is slot for the Miyoo Flip**, an unofficial fork of [slot](https://github.com/slot-cfw/slot)
+> (made for the Anbernic RG SP). Install guide and the list of what it adds:
+> [README-FLIP.md](README-FLIP.md). Labels: [cart-studio-miyoo-flip](https://github.com/Shcoobz/cart-studio-miyoo-flip).
+
 <div align="center">
 
 <img src=".github/resources/banner.png" width="100%" alt="slot. A bespoke, Game Boy-centric frontend for the Anbernic RG SP.">
@@ -11,10 +16,7 @@
 </div>
 
 > [!NOTE]
-> **Miyoo Flip:** this is an unofficial fork that runs slot on the Miyoo Flip (with
-> baseos-my355). A ready-to-copy card is in [`flip-card/`](flip-card); see
-> [README-FLIP.md](README-FLIP.md) for install, credits and licence notes. The rest of this
-> page is upstream slot's README.
+> The rest of this page is upstream slot's README.
 
 ---
 

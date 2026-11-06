@@ -100,16 +100,33 @@ Stick calibration (recommended)
 WHAT THIS FORK ADDS
 -------------------
 
+  Hardware
   - Miyoo Flip support: display, buttons and sticks, lid, rumble, LED,
     headphones and HDMI.
-  - Gambatte for Game Boy and Game Boy Color. mGBA and gpSP are there
-    for Game Boy Advance, as in upstream slot.
+  - TV output over HDMI: NES and SNES fill the screen at 4:3, with a
+    sharp 2x mode.
+  - Real sleep when you close the lid.
+  - Battery savings: Dim Screen and Auto Sleep settings, a CPU cap while
+    a light core plays (lifted for fast-forward), and volume set on the
+    sound chip, with the amplifier off at mute.
+  - Tilt for games such as WarioWare: Twisted!, steered with a stick.
+
+  Systems and cores
+  - NES (FCEUmm, Nestopia) and Super Nintendo (Snes9x, Snes9x 2005 Plus)
+    on their own shelves, with their own button layouts.
+  - Gambatte for Game Boy and Game Boy Color, with slot's palettes.
+    mGBA and gpSP are there for Game Boy Advance, as in upstream slot.
+  - Core per game, per folder or per system.
+  - Turbo A and B on the Game Boy and NES pads.
+
+  Shelf and menus
   - Folders on the shelf, drawn as taped stacks of carts. A opens a
     folder. START on a folder opens its menu: Rename, Cover, Sort, Core,
     Open at, Paper.
+  - Game switcher: the recently played games, newest first. X opens a
+    game's save states.
   - An Extras shelf with Activity report, Get lucky and Never played.
-  - Real sleep when you close the lid.
-  - Play-time tracking.
+  - Play-time tracking, shown on the open cartridge.
   - Delete a game from its cartridge view with Y.
   - Cheats in the in-game menu.
 

@@ -31,13 +31,29 @@ sticks are uncalibrated.
 
 ## What this fork adds
 
+**Hardware**
 - Miyoo Flip support: display, buttons and sticks, lid, rumble, LED, headphones and HDMI.
-- Gambatte for Game Boy and Game Boy Color (mGBA and gpSP for GBA, as upstream).
-- Folders on the shelf, drawn as taped stacks. A opens a folder; START opens its menu:
-  Rename, Cover, Sort, Core, Open at, Paper.
-- An Extras shelf: Activity report, Get lucky, Never played.
+- TV output over HDMI: NES and SNES fill the screen at 4:3, with a sharp 2× mode.
 - Real sleep when the lid is closed.
-- Play-time tracking.
+- Battery savings: Dim Screen and Auto Sleep settings, a CPU cap while a light core plays
+  (lifted for fast-forward), and volume set on the codec, with the amplifier off at mute.
+- Tilt for games such as WarioWare: Twisted!, steered with a stick (spin or held-angle mode).
+
+**Systems and cores**
+- NES (FCEUmm, Nestopia) and Super Nintendo (Snes9x, Snes9x 2005 Plus) on their own shelves,
+  with their own button layouts.
+- Gambatte for Game Boy and Game Boy Color, with slot's palettes (mGBA and gpSP for GBA, as
+  upstream).
+- Core per game, per folder or per system.
+- Turbo A and B on the Game Boy and NES pads.
+
+**Shelf and menus**
+- Folders on the shelf, drawn as taped stacks (one level, e.g. `Games/GBA/Pokemon Hacks/`).
+  A opens a folder; START opens its menu: Rename, Cover, Sort, Core, Open at, Paper.
+- Game switcher: the recently played games, newest first; X opens a game's save states.
+- An Extras shelf: Activity report, Get lucky and Never played (they share one deck, so a
+  game comes up again only after all the others have).
+- Play-time tracking, shown on the open cartridge (`PLAYED 64 H 10 M · yesterday`).
 - Delete a game from its cartridge view with Y.
 - Cheats (libretro `.cht` files in `Cheats/<SYS>/`) in the in-game menu.
 
@@ -109,5 +125,7 @@ is already Linux on aarch64. On an x86 machine that means Docker needs arm64 emu
 
 ### Cart Studio
 
-A local copy of Cart Studio (cart labels in the browser) lives next to this repository in
-`slot-cart-studio/`; its `README.md` explains how to run it yourself.
+Cart labels for this fork are made with the matching Cart Studio fork,
+[Shcoobz/cart-studio-miyoo-flip](https://github.com/Shcoobz/cart-studio-miyoo-flip), which reads
+cards the way this fork does (game folders, NES and SNES). Its `README.md` explains how to run
+it yourself; locally it lives next to this repository in `slot-cart-studio/`.
