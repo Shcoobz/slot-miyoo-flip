@@ -1,9 +1,3 @@
-<div align="center">
-
-<img src=".github/resources/banner.png" width="100%" alt="slot. A bespoke, Game Boy-centric frontend for the Miyoo Flip.">
-
-</div>
-
 # slot for the Miyoo Flip
 
 An unofficial port of **[slot](https://github.com/slot-cfw/slot)** by Brandon Kowalski to the
