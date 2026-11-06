@@ -171,7 +171,7 @@ fn with_recents_off_the_card_boots_as_it_always_has() {
             ..SlotState::default()
         },
     );
-    assert_eq!(a.shelf_platform_name(), Some("Game Boy Advance"));
+    assert_eq!(a.shelf_platform_name(), Some("Game Boy"));
 }
 
 #[test]

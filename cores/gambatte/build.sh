@@ -1,0 +1,53 @@
+#!/bin/sh
+# Gambatte, the Game Boy and Game Boy Color core the Miyoo Flip build defaults to, built from
+# its pinned source archive. The archive ships beside it as its GPL-2.0 corresponding source.
+set -eu
+
+device_cflags="-mcpu=cortex-a55 -O2 -DNDEBUG"
+
+usage() {
+	echo "usage: $0 stamp COMMIT | build COMMIT TARBALL WORKDIR OUT" >&2
+	exit 2
+}
+
+stamp() {
+	echo "commit=$1"
+	echo "source=https://github.com/libretro/gambatte-libretro/archive/$1.tar.gz"
+	echo "recipe=make -f Makefile.libretro platform=unix"
+	echo "device_cflags=$device_cflags"
+}
+
+build() {
+	commit="$1" tarball="$2" work="$3" out="$4"
+	src="$work/gambatte-libretro-$commit"
+
+	rm -rf "$work"
+	mkdir -p "$work"
+	tar -xzf "$tarball" -C "$work"
+	if [ ! -f "$src/Makefile.libretro" ]; then
+		echo "$tarball does not hold gambatte-libretro-$commit/Makefile.libretro" >&2
+		exit 1
+	fi
+
+	CFLAGS="$device_cflags" CXXFLAGS="$device_cflags" \
+		make -C "$src" -f Makefile.libretro platform=unix \
+		-j"$(getconf _NPROCESSORS_ONLN)"
+
+	mkdir -p "$(dirname "$out")"
+	cp "$src/gambatte_libretro.so" "$out"
+	stamp "$commit" >"$out.meta"
+}
+
+case "${1:-}" in
+stamp)
+	[ $# -eq 2 ] && [ -n "$2" ] || usage
+	stamp "$2"
+	;;
+build)
+	[ $# -eq 5 ] && [ -n "$2" ] && [ -n "$3" ] && [ -n "$4" ] && [ -n "$5" ] || usage
+	build "$2" "$3" "$4" "$5"
+	;;
+*)
+	usage
+	;;
+esac

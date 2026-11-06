@@ -119,28 +119,32 @@ fn the_open_cart_starts_as_the_shelf_cart_and_lands_where_the_mockup_has_it() {
     assert_eq!(
         shelf_cart(Canvas::FRAMED),
         Placed {
-            x: 180.0,
-            y: 134.0,
-            w: 360.0,
-            h: 212.0
-        }
+            x: 135.0,
+            y: 79.0,
+            w: 450.0,
+            h: 265.0
+        },
+        "the shelf shows a GBA cart at 1.25x, centred in the room above the slot"
     );
     assert_eq!(
         board_at(Canvas::FRAMED, 0.0),
         board_in(shelf_cart(Canvas::FRAMED))
     );
+    let size = |p: Placed| (p.w, p.h);
     assert_eq!(
-        board_at(Canvas::FRAMED, 0.0).x,
-        board_at(Canvas::FRAMED, 1.0).x,
-        "the board slid sideways while it opened"
+        size(board_at(Canvas::FRAMED, 0.0)),
+        size(board_at(Canvas::FRAMED, 1.0)),
+        "the board changed size while it opened"
     );
+    // The lid and the board are centred together, the board right of the lid, just above the
+    // legend.
     assert_eq!(
         board_at(Canvas::FRAMED, 1.0),
         Placed {
-            x: 180.0,
-            y: 150.0,
-            w: CART_W as f32,
-            h: CART_H as f32,
+            x: 219.5,
+            y: 87.0,
+            w: 450.0,
+            h: 265.0,
         }
     );
     assert_eq!(
@@ -157,14 +161,20 @@ fn the_lid_leaves_level_and_rests_turned() {
         (shelf_cart(Canvas::FRAMED), 0.0)
     );
     let (rest, turn) = lid_at(Canvas::FRAMED, 1.0);
-    assert_eq!((rest.x, rest.w), (288.0, 144.0));
+    assert_eq!((rest.x, rest.w), (50.5, 150.0));
     assert!(
-        (rest.h - 144.0 * CART_H as f32 / CART_W as f32).abs() < 1e-3,
+        (rest.h - 150.0 * CART_H as f32 / CART_W as f32).abs() < 1e-3,
         "the lid is squashed on landing: {rest:?}"
     );
+    let board = board_at(Canvas::FRAMED, 1.0);
+    assert_eq!(
+        rest.x + rest.w + 19.0,
+        board.x,
+        "the lid is not set aside left of the board: {rest:?}"
+    );
     assert!(
-        (rest.y + rest.h / 2.0 - 70.5).abs() < 1e-3,
-        "the lid moved: {rest:?}"
+        (rest.y + rest.h / 2.0 - (board.y + board.h / 2.0)).abs() < 1e-3,
+        "the lid is not centred on the board: {rest:?}"
     );
     assert_eq!(turn, LID_TURN);
     assert!(
@@ -226,6 +236,13 @@ fn the_front_slides_up_a_third_before_it_lifts() {
     assert_eq!(SLIDE_UP, CART_H as f32 / 3.0);
     let shelf = shelf_cart(Canvas::FRAMED);
     let (slid, turn) = lid_at(Canvas::FRAMED, SLIDE_SHARE);
+    let rest = lid_at(Canvas::FRAMED, 1.0).0;
+    // The lid rests below the shelf cart's top, so it slides the whole third up before it swings
+    // down to rest.
+    assert!(
+        rest.y > shelf.y,
+        "the lid rests above the shelf cart: {rest:?}"
+    );
     assert_eq!(
         slid,
         Placed {
@@ -246,10 +263,10 @@ fn the_lift_starts_where_the_slide_ends() {
 }
 
 #[test]
-fn board_units_land_on_the_panel_at_one_and_a_half_times() {
+fn board_units_land_on_the_panel_at_one_and_seven_eighths() {
     let board = board_at(Canvas::FRAMED, 1.0);
-    assert_eq!(on_board(board, 0.0, 0.0), (180.0, 150.0));
-    assert_eq!(on_board(board, 240.0, 135.0), (540.0, 362.0));
+    assert_eq!(on_board(board, 0.0, 0.0), (219.5, 87.0));
+    assert_eq!(on_board(board, 240.0, 135.0), (669.5, 352.0));
 }
 
 #[test]

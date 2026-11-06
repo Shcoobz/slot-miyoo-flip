@@ -8,13 +8,58 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::{Battery, Charge, LedState, Platform, RepairResult};
+use crate::{Battery, Charge, CpuCap, LedState, Mixer, Platform, RepairResult};
 
 const TOP_STEP: u32 = 9;
 
-const BACKLIGHT_FLOOR: f64 = 8.0 / 255.0;
+/// The backlight's lowest lit step and the bend of the steps above it, as a share of its range.
+#[derive(Copy, Clone)]
+struct BacklightCurve {
+    floor: f64,
+    power: f64,
+}
 
-const BACKLIGHT_CURVE: f64 = 1.75;
+const BACKLIGHT_CURVE: BacklightCurve = BacklightCurve {
+    floor: 8.0 / 255.0,
+    power: 1.75,
+};
+
+/// The Miyoo Flip's kernel maps brightness through its own table: 1 already drives the panel at
+/// 20/255, and 255 at 255 on a straight line between. That floor is far from dark, so the Flip's
+/// steps are light levels instead, even to the eye from `FLIP_DARKEST` of full to full; the ones
+/// under the floor keep the backlight at 1 and darken the picture the rest of the way.
+const FLIP_KERNEL_FLOOR: f64 = 20.0 / 255.0;
+const FLIP_DARKEST: f64 = 0.005;
+
+/// How much light a Flip brightness step gives, as a share of full: 0 off, then 0.5 %, 1 %, 1.9 %,
+/// 3.6 %, 7.1 %, 13.7 %, 26.6 %, 51.6 % and 100 %.
+fn flip_light(step: u8) -> f64 {
+    let step = u32::from(step).min(TOP_STEP);
+    if step == 0 {
+        return 0.0;
+    }
+    let t = f64::from(step - 1) / f64::from(TOP_STEP - 1);
+    FLIP_DARKEST * (1.0 / FLIP_DARKEST).powf(t)
+}
+
+/// The Flip's backlight value for a step: 1 for every step at or under the kernel's floor.
+fn flip_backlight_value(step: u8, max: u32) -> u32 {
+    let light = flip_light(step);
+    if light <= 0.0 {
+        return 0;
+    }
+    let over = ((light - FLIP_KERNEL_FLOOR) / (1.0 - FLIP_KERNEL_FLOOR)).max(0.0);
+    (1.0 + over * f64::from(max.max(1) - 1)).round() as u32
+}
+
+/// What the picture is multiplied by for a Flip step the backlight cannot reach.
+pub fn flip_picture_dim(step: u8) -> f32 {
+    let light = flip_light(step);
+    match light > 0.0 && light < FLIP_KERNEL_FLOOR {
+        true => (light / FLIP_KERNEL_FLOOR) as f32,
+        false => 1.0,
+    }
+}
 
 const DEV_INPUT: &str = "/dev/input";
 
@@ -102,7 +147,15 @@ pub struct DevicePlatform {
     battery: Option<PathBuf>,
     rtc: Option<PathBuf>,
     motor: Option<Motor>,
+    jack: Option<PathBuf>,
+    curve: BacklightCurve,
+    /// A Miyoo Flip: its brightness steps are light levels (`flip_light`), not a curve.
+    flip: bool,
     led: Option<Led>,
+    /// The Flip's codec volume and playback path, set off the main thread.
+    mixer: Option<Mixer>,
+    /// The Flip's top CPU clock, capped for the light cores.
+    cpu: Option<CpuCap>,
 }
 
 impl DevicePlatform {
@@ -130,10 +183,17 @@ impl DevicePlatform {
         let battery = first_dir(&sysfs.join("class/power_supply"), is_battery);
         let rtc = first_dir(&sysfs.join("class/rtc"), |_| true);
         let motor = Motor::open(sysfs);
-        let led = first_dir(&sysfs.join("class/leds"), |d| {
-            d.join("multi_intensity").is_file() || d.join("brightness").is_file()
-        })
-        .map(|dir| {
+        let jack = flip_jack(sysfs);
+        let flip = baseos_target().as_deref() == Some("my355");
+        let curve = BACKLIGHT_CURVE;
+        if flip {
+            wifi_off(sysfs);
+        }
+        let mixer = jack.is_some().then(Mixer::spawn);
+        let cpu = flip
+            .then(|| CpuCap::at(&sysfs.join("devices/system/cpu/cpufreq/policy0")))
+            .flatten();
+        let led = status_led(&sysfs.join("class/leds")).map(|dir| {
             if dir.join("multi_intensity").is_file() {
                 Led::Multi(dir)
             } else {
@@ -149,7 +209,12 @@ impl DevicePlatform {
             battery,
             rtc,
             motor,
+            jack,
+            curve,
+            flip,
             led,
+            mixer,
+            cpu,
         }
     }
 
@@ -217,6 +282,23 @@ pub fn has_bit(mask: &str, bit: u16) -> bool {
     u64::from_str_radix(word, 16).is_ok_and(|w| w >> (bit % 64) & 1 == 1)
 }
 
+/// The LED that shows slot's state: one named `work` (the Miyoo Flip's power LED) if there is
+/// one, else the first that is neither the charge LED the kernel drives nor an SD activity LED.
+pub fn status_led(leds: &Path) -> Option<PathBuf> {
+    let usable = |d: &Path| d.join("multi_intensity").is_file() || d.join("brightness").is_file();
+    let work = leds.join("work");
+    if usable(&work) {
+        return Some(work);
+    }
+    first_dir(leds, |d| {
+        let name = d
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        usable(d) && !name.starts_with("charger") && !name.starts_with("mmc")
+    })
+}
+
 pub fn rumble_node(sysfs: &Path) -> Option<String> {
     let dir = first_dir(&sysfs.join("class/input"), |node| {
         fs::read_to_string(node.join("device/capabilities/ff"))
@@ -234,11 +316,51 @@ pub fn motor_change(strength: u16, running: bool) -> Option<bool> {
 }
 
 struct Motor {
-    node: fs::File,
+    drive: Drive,
     name: String,
-    id: i16,
     running: bool,
 }
+
+enum Drive {
+    /// A force-feedback input node, as on the Anbernic handhelds.
+    Ff { node: fs::File, id: i16 },
+    /// A motor switched by a GPIO's value file.
+    Gpio(PathBuf),
+}
+
+/// The Miyoo Flip's headphone jack: GPIO 150 reads 0 with a plug in. The codec does not
+/// follow it, so slot switches its playback path itself.
+const FLIP_JACK_GPIO: u32 = 150;
+
+/// The RTC alarm that ends a deep sleep after the lid's power-off timeout.
+const WAKE_ALARM: &str = "/sys/class/rtc/rtc0/wakealarm";
+
+fn baseos_target() -> Option<String> {
+    let release = fs::read_to_string(BASEOS_RELEASE).ok()?;
+    let target = release
+        .lines()
+        .find_map(|l| l.strip_prefix("BASEOS_TARGET="))?;
+    Some(target.trim_matches('"').to_string())
+}
+
+fn flip_jack(sysfs: &Path) -> Option<PathBuf> {
+    if baseos_target()? != "my355" {
+        return None;
+    }
+    let gpio = sysfs.join("class/gpio");
+    let dir = gpio.join(format!("gpio{FLIP_JACK_GPIO}"));
+    if !dir.is_dir() {
+        let _ = fs::write(gpio.join("export"), FLIP_JACK_GPIO.to_string());
+    }
+    let _ = fs::write(dir.join("direction"), "in");
+    let value = dir.join("value");
+    value.is_file().then_some(value)
+}
+
+/// BaseOS targets whose motor hangs off a plain GPIO rather than an input node.
+const GPIO_MOTORS: [(&str, u32); 1] = [("my355", 20)];
+
+const BASEOS_RELEASE: &str = "/etc/baseos-release";
 
 #[cfg(unix)]
 #[repr(C)]
@@ -372,6 +494,33 @@ fn upload(node: &fs::File, id: i16) -> Option<i16> {
 
 impl Motor {
     fn open(sysfs: &Path) -> Option<Motor> {
+        Motor::open_ff(sysfs).or_else(|| Motor::open_gpio(sysfs))
+    }
+
+    fn open_gpio(sysfs: &Path) -> Option<Motor> {
+        let release = fs::read_to_string(BASEOS_RELEASE).ok()?;
+        let target = release
+            .lines()
+            .find_map(|l| l.strip_prefix("BASEOS_TARGET="))?
+            .trim_matches('"');
+        let (_, pin) = GPIO_MOTORS.iter().find(|(t, _)| *t == target)?;
+        let gpio = sysfs.join("class/gpio");
+        let dir = gpio.join(format!("gpio{pin}"));
+        if !dir.is_dir() {
+            let _ = fs::write(gpio.join("export"), pin.to_string());
+        }
+        let name = format!("gpio{pin}");
+        fs::write(dir.join("direction"), "out")
+            .map_err(|e| eprintln!("slot: rumble {name}: {e}"))
+            .ok()?;
+        Some(Motor {
+            drive: Drive::Gpio(dir.join("value")),
+            name,
+            running: false,
+        })
+    }
+
+    fn open_ff(sysfs: &Path) -> Option<Motor> {
         let name = rumble_node(sysfs)?;
         let node = fs::OpenOptions::new()
             .read(true)
@@ -384,35 +533,43 @@ impl Motor {
             return None;
         };
         Some(Motor {
-            node,
+            drive: Drive::Ff { node, id },
             name,
-            id,
             running: false,
         })
     }
 
     fn play(&mut self, on: bool) {
-        if on {
-            match upload(&self.node, self.id).or_else(|| upload(&self.node, -1)) {
-                Some(id) => self.id = id,
-                None => eprintln!(
-                    "slot: rumble {}: {}",
-                    self.name,
-                    std::io::Error::last_os_error()
-                ),
+        let played = match &mut self.drive {
+            Drive::Gpio(value) => fs::write(value, if on { "1" } else { "0" }),
+            Drive::Ff { node, id } => {
+                if on {
+                    match upload(node, *id).or_else(|| upload(node, -1)) {
+                        Some(new) => *id = new,
+                        None => eprintln!(
+                            "slot: rumble {}: {}",
+                            self.name,
+                            std::io::Error::last_os_error()
+                        ),
+                    }
+                }
+                let ev = FfEvent {
+                    sec: 0,
+                    usec: 0,
+                    kind: EV_FF,
+                    code: *id as u16,
+                    value: i32::from(on),
+                };
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        &ev as *const FfEvent as *const u8,
+                        size_of::<FfEvent>(),
+                    )
+                };
+                (&*node).write_all(bytes)
             }
-        }
-        let ev = FfEvent {
-            sec: 0,
-            usec: 0,
-            kind: EV_FF,
-            code: self.id as u16,
-            value: i32::from(on),
         };
-        let bytes = unsafe {
-            std::slice::from_raw_parts(&ev as *const FfEvent as *const u8, size_of::<FfEvent>())
-        };
-        match (&self.node).write_all(bytes) {
+        match played {
             Ok(()) => self.running = on,
             Err(e) => eprintln!("slot: rumble: {e}"),
         }
@@ -465,20 +622,107 @@ fn headphones_in(gpio: &str) -> bool {
         .is_some_and(|(_, state)| state.split_whitespace().nth(1) == Some("hi"))
 }
 
-fn backlight_value(step: u8, max: u32) -> u32 {
+/// Powers the Flip's Wi-Fi and Bluetooth module down: slot uses neither, and awake on its USB bus
+/// it draws about 100 mA (measured on the Flip, 2026-10-24).
+fn wifi_off(sysfs: &Path) {
+    let power = sysfs.join("class/rkwifi/wifi_power");
+    if !power.is_file() {
+        return;
+    }
+    match fs::write(&power, "0") {
+        Ok(()) => eprintln!("slot: wifi: module powered off"),
+        Err(e) => eprintln!("slot: wifi: {}: {e}", power.display()),
+    }
+}
+
+fn backlight_value(step: u8, max: u32, curve: BacklightCurve) -> u32 {
     let step = u32::from(step).min(TOP_STEP);
     if step == 0 {
         return 0;
     }
     let t = f64::from(step - 1) / f64::from(TOP_STEP - 1);
-    let floor = (f64::from(max) * BACKLIGHT_FLOOR).round().max(1.0);
+    let floor = (f64::from(max) * curve.floor).round().max(1.0);
     let span = f64::from(max) - floor;
-    (floor + span * t.powf(BACKLIGHT_CURVE)).round() as u32
+    (floor + span * t.powf(curve.power)).round() as u32
 }
 
 impl Platform for DevicePlatform {
+    fn on_a_computer(&self) -> bool {
+        let Ok(dir) = fs::read_dir(self.sysfs.join("class/udc")) else {
+            return false;
+        };
+        dir.flatten().any(|e| {
+            fs::read_to_string(e.path().join("state")).is_ok_and(|s| s.trim() == "configured")
+        })
+    }
+
+    fn picture_dim(&self, step: u8) -> f32 {
+        match self.flip {
+            true => flip_picture_dim(step),
+            false => 1.0,
+        }
+    }
+
     fn headphones(&self) -> bool {
+        if let Some(jack) = &self.jack {
+            return fs::read_to_string(jack).is_ok_and(|v| v.trim() == "0");
+        }
         fs::read_to_string(self.sysfs.join("kernel/debug/gpio")).is_ok_and(|g| headphones_in(&g))
+    }
+
+    fn route_audio(&mut self, headphones: bool) {
+        if let Some(mixer) = &mut self.mixer {
+            mixer.route(headphones);
+        }
+    }
+
+    fn set_volume(&mut self, volume: u8, headphones: bool) {
+        if let Some(mixer) = &mut self.mixer {
+            mixer.set_volume(volume, headphones);
+        }
+    }
+
+    fn hardware_volume(&self) -> bool {
+        self.mixer.as_ref().is_some_and(Mixer::active)
+    }
+
+    fn cap_cpu(&mut self, khz: u32) {
+        if let Some(cpu) = &mut self.cpu {
+            cpu.cap(khz);
+        }
+    }
+
+    /// The Flip's deep sleep, as spruce and NextUI use it on this kernel: an RTC alarm for the
+    /// power-off timeout, `deep` as the mem sleep, then `mem` into `/sys/power/state`, which
+    /// returns once the lid or the power key woke the unit.
+    fn suspend(&mut self, wake_after: Option<Duration>) -> bool {
+        if baseos_target().as_deref() != Some("my355") {
+            return false;
+        }
+        let power = Path::new("/sys/power");
+        let alarm = Path::new(WAKE_ALARM);
+        let _ = fs::write(alarm, "0");
+        if let Some(after) = wake_after {
+            if let Err(e) = fs::write(alarm, format!("+{}", after.as_secs().max(1))) {
+                eprintln!("slot: suspend: wake alarm: {e}");
+            }
+        }
+        if let Err(e) = fs::write(power.join("mem_sleep"), "deep") {
+            eprintln!("slot: suspend: mem_sleep: {e}");
+        }
+        eprintln!("slot: suspend: going to sleep");
+        let slept = fs::write(power.join("state"), "mem");
+        let _ = fs::write(alarm, "0");
+        match slept {
+            Ok(()) => {
+                eprintln!("slot: suspend: awake");
+                true
+            }
+            Err(e) => {
+                eprintln!("slot: suspend: {e}");
+                false
+            }
+        }
     }
 
     fn card_read_only(&self) -> bool {
@@ -500,7 +744,10 @@ impl Platform for DevicePlatform {
         let Some(backlight) = &self.backlight else {
             return;
         };
-        let value = backlight_value(step, self.max_brightness);
+        let value = match self.flip {
+            true => flip_backlight_value(step, self.max_brightness),
+            false => backlight_value(step, self.max_brightness, self.curve),
+        };
         let write = |file: PathBuf, body: String| {
             if let Err(e) = fs::write(&file, body) {
                 eprintln!("slot: {}: {e}", file.display());
@@ -548,6 +795,22 @@ impl Platform for DevicePlatform {
                 let _ = fs::write(dir.join("brightness"), "255\n");
             }
             Led::Mono { dir, max } => {
+                // A lone LED can still say "low" by blinking where the kernel offers a timer.
+                let triggers = fs::read_to_string(dir.join("trigger")).unwrap_or_default();
+                let offers = |t: &str| {
+                    triggers
+                        .split_whitespace()
+                        .any(|w| w.trim_matches(['[', ']']) == t)
+                };
+                if state == LedState::Low && offers("timer") {
+                    let _ = fs::write(dir.join("trigger"), "timer\n");
+                    let _ = fs::write(dir.join("delay_on"), "250\n");
+                    let _ = fs::write(dir.join("delay_off"), "1750\n");
+                    return;
+                }
+                if offers("none") {
+                    let _ = fs::write(dir.join("trigger"), "none\n");
+                }
                 let on = !matches!(state, LedState::Off | LedState::Low);
                 let value = if on { *max } else { 0 };
                 let _ = fs::write(dir.join("brightness"), format!("{value}\n"));
@@ -759,4 +1022,37 @@ pub fn take_repair_result(file: &Path) -> Option<RepairResult> {
         "clean" => RepairResult::Clean,
         _ => RepairResult::Failed,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_flips_darkest_step_is_the_backlights_floor_with_the_picture_nearly_black() {
+        assert_eq!(flip_backlight_value(0, 255), 0);
+        assert_eq!(flip_backlight_value(1, 255), 1);
+        assert!(
+            flip_picture_dim(1) < 0.07,
+            "step 1 at {}",
+            flip_picture_dim(1)
+        );
+        assert_eq!(flip_backlight_value(9, 255), 255);
+        assert_eq!(flip_picture_dim(9), 1.0);
+    }
+
+    #[test]
+    fn every_flip_step_is_brighter_than_the_one_below() {
+        let seen = |s: u8| {
+            let value = flip_backlight_value(s, 255);
+            let lit = 20.0 + f64::from(value.saturating_sub(1)) * 235.0 / 254.0;
+            lit * f64::from(flip_picture_dim(s))
+        };
+        for s in 2..=TOP_STEP as u8 {
+            assert!(
+                seen(s) > seen(s - 1) * 1.5,
+                "step {s} is not clearly brighter"
+            );
+        }
+    }
 }

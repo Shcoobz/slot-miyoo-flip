@@ -396,6 +396,10 @@ fn in_game_buttons_are_set_from_the_main_menu_and_reach_a_game() {
     assert_eq!(
         QuickRow::GameUp.shown(&s.app().hidden_rows()),
         QuickRow::CONTROLS
+            .into_iter()
+            .filter(|r| !matches!(r, QuickRow::GameX | QuickRow::GameY))
+            .collect::<Vec<_>>(),
+        "the SNES X and Y showed on a card with no SNES games"
     );
     for _ in 0..QuickRow::GameA.position(&[]) {
         tap(&mut s, &mut now, Btn::Down);
@@ -428,7 +432,7 @@ fn turbo_b_moves_off_y_from_the_in_game_page() {
     tap(&mut s, &mut now, Btn::A);
     tap(&mut s, &mut now, Btn::Up);
     tap(&mut s, &mut now, Btn::A);
-    for _ in 0..QuickRow::GameTurboB.position(&[]) {
+    for _ in 0..QuickRow::GameTurboB.position(&s.app().hidden_rows()) {
         tap(&mut s, &mut now, Btn::Down);
     }
     assert_eq!(s.app().quick_menu(), Some(QuickRow::GameTurboB));
@@ -749,6 +753,8 @@ fn start_up_raises_brightness_on_the_shelf_and_start_alone_still_opens_the_chip(
         Binding::pair(Device::Start, Device::Up),
     );
     let (_d, mut s, mut now) = shelf_with(keys);
+    // The GBA shelf, where the chip offers a choice of cores; the Game Boy one comes first.
+    tap(&mut s, &mut now, Btn::R1);
     let bright = s.app().brightness();
     chord(&mut s, &mut now, Btn::Start, Btn::Up);
     assert_eq!(s.app().brightness(), bright + 1);

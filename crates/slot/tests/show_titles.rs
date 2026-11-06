@@ -59,6 +59,9 @@ fn title_alpha(a: &App) -> Option<f32> {
 fn the_title_is_the_selected_carts_cleaned_file_name() {
     let d = card();
     let mut a = boot(d.path(), true);
+    // The Game Boy shelf comes first; the titles under test are on the GBA one.
+    press(&mut a, Btn::R1);
+    assert_eq!(a.shelf_platform_name(), Some("Game Boy Advance"));
     tick(&mut a, 3.0);
     assert_eq!(a.title_text().as_deref(), Some("Emerald"));
     press(&mut a, Btn::Right);

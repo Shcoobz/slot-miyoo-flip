@@ -340,7 +340,7 @@ fn the_presets_are_the_tables_plastics_each_once() {
     let presets = shell_presets();
     assert_eq!(
         presets.len(),
-        25,
+        27,
         "a table row the presets name has gone missing"
     );
     let mut names: Vec<_> = presets.iter().map(|(n, _)| *n).collect();

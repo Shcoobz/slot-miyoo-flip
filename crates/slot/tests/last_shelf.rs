@@ -53,6 +53,8 @@ fn recent(platform: Platform, stem: &str) -> Recent {
 fn powering_off_on_a_cart_boots_back_onto_its_shelf_and_cart() {
     let d = card();
     let mut a = boot_with(d.path(), SlotState::default());
+    press(&mut a, Btn::R1);
+    assert_eq!(a.shelf_platform_name(), Some("Game Boy Advance"));
     press(&mut a, Btn::Right);
     press(&mut a, Btn::Right);
     assert_eq!(a.selected_stem(), Some("Fusion"));
@@ -97,8 +99,8 @@ fn a_remembered_cart_the_card_no_longer_holds_boots_as_before() {
             ..SlotState::default()
         },
     );
-    assert_eq!(a.shelf_platform_name(), Some("Game Boy Advance"));
-    assert_eq!(a.selected_stem(), Some("Drill Dozer"));
+    assert_eq!(a.shelf_platform_name(), Some("Game Boy"));
+    assert_eq!(a.selected_stem(), Some("Tetris"));
 }
 
 #[test]

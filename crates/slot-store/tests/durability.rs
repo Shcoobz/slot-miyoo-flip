@@ -245,6 +245,9 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
             show_titles: false,
             left_stick_dpad: true,
             lid_off_min: None,
+            auto_sleep_min: 0,
+            dim_screen_s: 0,
+            switcher_games: 10,
             bezel_gba: BezelPick::Ags102,
             bezel_gb: BezelPick::Ags102,
             bezel_gbc: BezelPick::Ags102,
@@ -382,7 +385,7 @@ fn an_out_of_range_setting_falls_back_to_its_default() {
         "colour_correction_gb=on\n",
         "ff_speed=5\n",
         "ff_speed=7\n",
-        "ff_speed=8\n",
+        "ff_speed=9\n",
         "ff_speed=255\n",
     ] {
         std::fs::write(d.path().join("Config/slot.state"), format!("{known}{bad}")).unwrap();
@@ -450,7 +453,7 @@ fn an_unreadable_platform_reads_as_a_card_that_never_said() {
     let known = "cart=Tetris\nbrightness=3\nblue_light=1\nvolume=40\nmuted=0\nclock_set=1\nutc_offset_min=0\n";
     for (line, want) in [
         ("cart_platform=\n", None),
-        ("cart_platform=nes\n", None),
+        ("cart_platform=n64\n", None),
         ("cart_platform=gameboy\n", None),
         ("cart_platform=0\n", None),
         ("cart_platform=nds\n", None),
@@ -601,4 +604,35 @@ fn lid_power_off_minutes_round_trip_and_drop_a_value_the_menu_does_not_offer() {
         .replace("lid_off_min=30", "lid_off_min=7");
     std::fs::write(&path, text).unwrap();
     assert_eq!(read_slot_state(d.path()).lid_off_min, None);
+}
+
+#[test]
+fn auto_sleep_minutes_round_trip_and_drop_a_value_the_menu_does_not_offer() {
+    let d = tmp_root();
+    for min in slot_store::AUTO_SLEEP_MIN {
+        let s = SlotState {
+            auto_sleep_min: min,
+            ..Default::default()
+        };
+        write_slot_state(d.path(), &s).unwrap();
+        assert_eq!(read_slot_state(d.path()).auto_sleep_min, min);
+    }
+    std::fs::write(d.path().join("Config/slot.state"), "auto_sleep_min=7\n").unwrap();
+    assert_eq!(read_slot_state(d.path()).auto_sleep_min, 0);
+}
+
+#[test]
+fn dim_screen_seconds_round_trip_default_off_and_drop_a_value_the_menu_does_not_offer() {
+    let d = tmp_root();
+    assert_eq!(SlotState::default().dim_screen_s, 0);
+    for secs in slot_store::DIM_SCREEN_S {
+        let s = SlotState {
+            dim_screen_s: secs,
+            ..Default::default()
+        };
+        write_slot_state(d.path(), &s).unwrap();
+        assert_eq!(read_slot_state(d.path()).dim_screen_s, secs);
+    }
+    std::fs::write(d.path().join("Config/slot.state"), "dim_screen_s=45\n").unwrap();
+    assert_eq!(read_slot_state(d.path()).dim_screen_s, 0);
 }

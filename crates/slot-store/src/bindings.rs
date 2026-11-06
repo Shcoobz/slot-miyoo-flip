@@ -212,10 +212,30 @@ pub enum GameButton {
     R,
     TurboA,
     TurboB,
+    /// The Super Nintendo's own X and Y, which sit where the turbo buttons do on the others.
+    X,
+    Y,
 }
 
 impl GameButton {
-    pub const ALL: [GameButton; 12] = [
+    pub const ALL: [GameButton; 14] = [
+        GameButton::Up,
+        GameButton::Down,
+        GameButton::Left,
+        GameButton::Right,
+        GameButton::A,
+        GameButton::B,
+        GameButton::Select,
+        GameButton::Start,
+        GameButton::L,
+        GameButton::R,
+        GameButton::TurboA,
+        GameButton::TurboB,
+        GameButton::X,
+        GameButton::Y,
+    ];
+
+    const GBA: [GameButton; 12] = [
         GameButton::Up,
         GameButton::Down,
         GameButton::Left,
@@ -230,6 +250,24 @@ impl GameButton {
         GameButton::TurboB,
     ];
 
+    /// The Super Nintendo pad: the Flip's face buttons sit where its own do (A right, B
+    /// bottom, X top, Y left), and L and R are the game's, so it has no turbo.
+    const SNES: [GameButton; 12] = [
+        GameButton::Up,
+        GameButton::Down,
+        GameButton::Left,
+        GameButton::Right,
+        GameButton::A,
+        GameButton::B,
+        GameButton::X,
+        GameButton::Y,
+        GameButton::Select,
+        GameButton::Start,
+        GameButton::L,
+        GameButton::R,
+    ];
+
+    /// The Game Boy's and the NES's pad: A, B, Select, Start and the D-pad, with turbo.
     const GAME_BOY: [GameButton; 10] = [
         GameButton::Up,
         GameButton::Down,
@@ -245,8 +283,9 @@ impl GameButton {
 
     pub fn of(platform: Platform) -> &'static [GameButton] {
         match platform {
-            Platform::Gba => &GameButton::ALL,
-            Platform::Gb | Platform::Gbc => &GameButton::GAME_BOY,
+            Platform::Gba => &GameButton::GBA,
+            Platform::Gb | Platform::Gbc | Platform::Nes => &GameButton::GAME_BOY,
+            Platform::Snes => &GameButton::SNES,
         }
     }
 
@@ -264,6 +303,8 @@ impl GameButton {
             GameButton::R => "R Button",
             GameButton::TurboA => "Turbo A",
             GameButton::TurboB => "Turbo B",
+            GameButton::X => "X Button",
+            GameButton::Y => "Y Button",
         }
     }
 
@@ -281,6 +322,8 @@ impl GameButton {
             GameButton::R => "r",
             GameButton::TurboA => "turbo_a",
             GameButton::TurboB => "turbo_b",
+            GameButton::X => "x",
+            GameButton::Y => "y",
         }
     }
 
@@ -298,6 +341,8 @@ impl GameButton {
             GameButton::R => Device::R1,
             GameButton::TurboA => Device::X,
             GameButton::TurboB => Device::Y,
+            GameButton::X => Device::X,
+            GameButton::Y => Device::Y,
         }
     }
 
@@ -402,7 +447,7 @@ impl Shortcut {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct Controls {
-    game: [Option<Binding>; 12],
+    game: [Option<Binding>; 14],
 }
 
 impl Default for Controls {

@@ -250,3 +250,20 @@ fn volume_on_headphones_shows_headphones() {
     assert_eq!(HudKind::Volume.icon(40, true, true), Icon::HeadphonesMuted);
     assert_eq!(HudKind::Brightness.icon(4, false, true), Icon::Brightness);
 }
+
+#[test]
+fn brightness_and_volume_read_as_a_percent_of_their_top() {
+    let mut hud = Hud::new();
+    hud.show(HudKind::Brightness, 1, false, 0);
+    assert_eq!(hud.percent(), Some(11));
+    hud.show(HudKind::Brightness, 9, false, 0);
+    assert_eq!(hud.percent(), Some(100));
+    hud.show(HudKind::Volume, 35, false, 0);
+    assert_eq!(hud.percent(), Some(35));
+    hud.show(HudKind::BlueLight, 3, false, 0);
+    assert_eq!(
+        hud.percent(),
+        None,
+        "the blue light is a level, not a share"
+    );
+}

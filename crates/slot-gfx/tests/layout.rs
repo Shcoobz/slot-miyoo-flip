@@ -178,3 +178,19 @@ fn a_frame_reaches_a_4_by_3_panel_one_to_one() {
         "the frame was moved or scaled on its way out"
     );
 }
+
+#[test]
+fn a_game_boy_picture_fills_a_4_3_panels_height_in_its_own_shape() {
+    assert_eq!(
+        slot_gfx::tall_rect((640, 480), 160.0 / 144.0),
+        (53, 0, 533, 480)
+    );
+}
+
+#[test]
+fn a_stretched_tall_picture_fills_the_whole_panel() {
+    assert_eq!(
+        slot_gfx::tall_rect((640, 480), f32::INFINITY),
+        (0, 0, 640, 480)
+    );
+}

@@ -15,6 +15,11 @@ pub fn dylib_name(core: Core) -> String {
     )
 }
 
+/// True when the core's library is on the card or beside slot.
+pub fn installed(root: &Path, core: Core) -> bool {
+    candidates(root, core).iter().any(|p| p.is_file())
+}
+
 fn candidates(root: &Path, core: Core) -> Vec<PathBuf> {
     if let Some(named) = std::env::var_os(CORE_ENV) {
         return vec![PathBuf::from(named)];
@@ -130,7 +135,8 @@ pub fn palette_for(
     rom: &Path,
     link: Option<u8>,
 ) -> Option<GbColors> {
-    (link.is_none() && platform != Platform::Gba && dmg_only(rom)).then_some(chosen)
+    (link.is_none() && matches!(platform, Platform::Gb | Platform::Gbc) && dmg_only(rom))
+        .then_some(chosen)
 }
 
 pub fn dmg_only(rom: &Path) -> bool {
@@ -173,6 +179,43 @@ pub fn colour_option(
             "gpsp_color_correction",
             if on { "enabled" } else { "disabled" },
         )),
+        Core::Gambatte => Some((
+            "gambatte_gbc_color_correction",
+            if on { "GBC only" } else { "disabled" },
+        )),
+        // A TV picture needs no handheld LCD correction.
+        Core::Fceumm | Core::Nestopia | Core::Snes9x | Core::Snes9x2005 => None,
+    }
+}
+
+/// Gambatte's internal palette for one of slot's: the same Game Boy, Game Boy Color and Super
+/// Game Boy sets under Gambatte's names.
+pub fn gambatte_palette(label: &str) -> String {
+    match label {
+        "Grayscale" | "GBC Gray" => "GBC - Grayscale".into(),
+        "DMG Green" => "GB - DMG".into(),
+        "GBC Pale Yellow" => "GBC - Pastel Mix".into(),
+        "GBC Reverse" => "GBC - Inverted".into(),
+        _ => match label.split_once(' ') {
+            Some(("SGB", set)) => format!("SGB - {}", set.replace('-', "")),
+            Some((console, name)) => format!("{console} - {name}"),
+            None => label.to_string(),
+        },
+    }
+}
+
+/// The options that colour a Game Boy cart on Gambatte: its own GBC colouring for Auto, else the
+/// matching internal palette.
+pub fn gambatte_colour_options(palette: Option<GbColors>) -> [(&'static str, String); 2] {
+    match palette {
+        Some(GbColors::Palette(p)) => [
+            ("gambatte_gb_colorization", "internal".into()),
+            ("gambatte_gb_internal_palette", gambatte_palette(p.label())),
+        ],
+        _ => [
+            ("gambatte_gb_colorization", "auto".into()),
+            ("gambatte_gb_internal_palette", "GB - DMG".into()),
+        ],
     }
 }
 
@@ -194,7 +237,11 @@ pub fn apply_core_options(
     colour: bool,
     palette: Option<GbColors>,
 ) {
-    core.set_option(&format!("{}_frameskip", which.as_str()), "auto");
+    // The NES and SNES cores run on their own defaults: none of them is short of frames on the
+    // Flip, and colour correction and Game Boy palettes mean nothing to them.
+    if matches!(which, Core::Mgba | Core::Gpsp) {
+        core.set_option(&format!("{}_frameskip", which.as_str()), "auto");
+    }
     if which == Core::Mgba {
         core.set_option("mgba_sgb_borders", "OFF");
         core.set_option("mgba_force_gbp", "ON");
@@ -209,6 +256,17 @@ pub fn apply_core_options(
                 core.set_option("mgba_gb_colors_preset", "1");
                 core.set_option("mgba_gb_colors", "GBC Dark Green →A");
             }
+        }
+        if let Some((key, value)) = colour_option(which, platform, colour) {
+            core.set_option(key, value);
+        }
+    }
+    if which == Core::Gambatte {
+        // Slot answers only the options it sets, so Gambatte's own default ("enabled") never
+        // reaches it; it plays the boot logo when BIOS/gb_bios.bin or gbc_bios.bin is there.
+        core.set_option("gambatte_gb_bootloader", "enabled");
+        for (key, value) in gambatte_colour_options(palette) {
+            core.set_option(key, &value);
         }
         if let Some((key, value)) = colour_option(which, platform, colour) {
             core.set_option(key, value);
@@ -258,6 +316,34 @@ mod tests {
         assert_eq!(
             colour_option(Core::Mgba, Platform::Gb, true),
             Some(("mgba_color_correction", "GBC"))
+        );
+    }
+
+    #[test]
+    fn nes_and_snes_cores_take_no_colour_correction_or_palette() {
+        for which in [Core::Fceumm, Core::Nestopia, Core::Snes9x, Core::Snes9x2005] {
+            for on in [false, true] {
+                for platform in [Platform::Nes, Platform::Snes] {
+                    assert_eq!(colour_option(which, platform, on), None);
+                }
+            }
+        }
+        let rom = Path::new("/dev/null/no-such.sfc");
+        assert_eq!(palette_for(GbColors::Auto, Platform::Snes, rom, None), None);
+    }
+
+    #[test]
+    fn nes_and_snes_cores_are_named_as_their_libretro_builds() {
+        let ext = std::env::consts::DLL_EXTENSION;
+        assert_eq!(dylib_name(Core::Fceumm), format!("fceumm_libretro.{ext}"));
+        assert_eq!(
+            dylib_name(Core::Nestopia),
+            format!("nestopia_libretro.{ext}")
+        );
+        assert_eq!(dylib_name(Core::Snes9x), format!("snes9x_libretro.{ext}"));
+        assert_eq!(
+            dylib_name(Core::Snes9x2005),
+            format!("snes9x2005_plus_libretro.{ext}")
         );
     }
 

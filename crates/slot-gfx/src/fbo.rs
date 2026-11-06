@@ -24,6 +24,7 @@ pub struct Compositor {
     u_gain: gl::types::GLint,
     u_blit_uv: gl::types::GLint,
     gain: [f32; 3],
+    dim: f32,
     shake: f32,
     window: (u32, u32),
     screen: f32,
@@ -32,7 +33,10 @@ pub struct Compositor {
     sprites: Sprites,
     game_bezel: Option<TexId>,
     sp_frame: bool,
+    tall: Option<f32>,
+    tv: Option<crate::TvFit>,
     turn: Option<Turn>,
+    uploads: u64,
 }
 
 impl Compositor {
@@ -73,6 +77,7 @@ impl Compositor {
                 u_gain,
                 u_blit_uv,
                 gain: blue_light_gain(0),
+                dim: 1.0,
                 shake: 0.0,
                 window: (OUT_W, OUT_H),
                 screen: 0.0,
@@ -81,7 +86,10 @@ impl Compositor {
                 sprites: Sprites::new()?,
                 game_bezel: None,
                 sp_frame: true,
+                tall: None,
+                tv: None,
                 turn: None,
+                uploads: 0,
             })
         }
     }
@@ -108,7 +116,26 @@ impl Compositor {
     }
 
     pub fn upload_game(&mut self, xrgb8888: &[u8]) {
+        self.uploads += 1;
         self.game.upload(xrgb8888);
+    }
+
+    /// Uploads a game frame of `w`x`h` pixels, packed: 240x160 for GBA and Game Boy, the core's
+    /// own size for NES and SNES (256x240, 256x224, up to 512x448).
+    pub fn upload_game_sized(&mut self, xrgb8888: &[u8], w: u32, h: u32) {
+        self.uploads += 1;
+        self.game.upload_sized(xrgb8888, w, h);
+    }
+
+    /// The size of the game frame last uploaded.
+    pub fn game_size(&self) -> (u32, u32) {
+        self.game.game_size()
+    }
+
+    /// Counts every upload, so a frame whose draw list matches the last one can tell whether a
+    /// texture under it changed.
+    pub fn uploads(&self) -> u64 {
+        self.uploads
     }
 
     pub fn draw_game(&mut self) {
@@ -133,8 +160,9 @@ impl Compositor {
                 }
                 Draw::Shot { tex } => {
                     self.sprites.draw(&items[from..i], &self.quad);
-                    if let Some(tex) = self.sprites.source(tex) {
-                        self.in_game_rect(|c| c.game.draw_still(tex, &c.quad));
+                    let size = self.sprites.source_size(tex);
+                    if let (Some(tex), Some(size)) = (self.sprites.source(tex), size) {
+                        self.in_game_rect(|c| c.game.draw_still(tex, size, &c.quad));
                     }
                 }
                 _ => continue,
@@ -145,19 +173,27 @@ impl Compositor {
     }
 
     pub fn create_texture(&mut self, w: u32, h: u32, rgba: &[u8]) -> TexId {
+        self.uploads += 1;
         self.sprites.create_texture(w, h, rgba)
     }
 
     pub fn create_texture_nearest(&mut self, w: u32, h: u32, rgba: &[u8]) -> TexId {
+        self.uploads += 1;
         self.sprites.create_texture_nearest(w, h, rgba)
     }
 
     pub fn update_texture(&mut self, id: TexId, w: u32, h: u32, rgba: &[u8]) {
+        self.uploads += 1;
         self.sprites.update_texture(id, w, h, rgba);
     }
 
     pub fn set_blue_light(&mut self, step: u8) {
         self.gain = blue_light_gain(step);
+    }
+
+    /// Darkens the whole picture, for brightness the backlight cannot go down to.
+    pub fn set_dim(&mut self, dim: f32) {
+        self.dim = dim.clamp(0.0, 1.0);
     }
 
     pub fn set_screen_effect(&mut self, effect: crate::ScreenEffect) {
@@ -174,6 +210,46 @@ impl Compositor {
 
     pub fn set_sp_frame(&mut self, on: bool) {
         self.sp_frame = on;
+    }
+
+    /// Draw the game at the panel's full height with this width-to-height ratio.
+    pub fn set_tall_game(&mut self, aspect: Option<f32>) {
+        self.tall = aspect;
+    }
+
+    /// Draw a TV console's game (NES, SNES) this way instead of in the GBA-shaped screen, on
+    /// any panel: `Tv` at 4:3, `Sharp` at a whole multiple of the frame. None for handhelds.
+    pub fn set_tv_game(&mut self, fit: Option<crate::TvFit>) {
+        self.tv = fit;
+    }
+
+    /// Where the game picture goes now, as (x, y from the top, w, h) in the frame's pixels,
+    /// when it is not the whole canvas: the GBA screen or tall Game Boy picture on a 4:3 panel,
+    /// or a TV console's picture on any panel.
+    pub fn game_area(&self) -> Option<(i32, i32, i32, i32)> {
+        if let Some(fit) = self.tv {
+            return Some(self.tv_area(fit));
+        }
+        if !self.native() {
+            return None;
+        }
+        Some(match self.tall {
+            Some(aspect) => crate::bezel::tall_rect(self.window, aspect),
+            None => crate::bezel::game_rect(self.window, self.sp_frame),
+        })
+    }
+
+    fn tv_area(&self, fit: crate::TvFit) -> (i32, i32, i32, i32) {
+        let frame = self.game.game_size();
+        if self.native() {
+            return crate::bezel::tv_rect(self.window, frame, fit);
+        }
+        // Placed on the 720x480 canvas, then scaled with it into the frame.
+        let (x, y, w, h) = crate::bezel::tv_rect((OUT_W, OUT_H), frame, fit);
+        let sx = self.size.0 as f32 / OUT_W as f32;
+        let sy = self.size.1 as f32 / OUT_H as f32;
+        let at = |v: i32, s: f32| (v as f32 * s).round() as i32;
+        (at(x, sx), at(y, sy), at(w, sx), at(h, sy))
     }
 
     fn draw_game_bezel(&mut self) {
@@ -396,7 +472,8 @@ impl Compositor {
             gl::Clear(gl::COLOR_BUFFER_BIT);
             gl::UseProgram(self.blit);
             gl::ActiveTexture(gl::TEXTURE0);
-            gl::Uniform3f(self.u_gain, self.gain[0], self.gain[1], self.gain[2]);
+            let [r, g, b] = self.gain.map(|c| c * self.dim);
+            gl::Uniform3f(self.u_gain, r, g, b);
             gl::BindTexture(gl::TEXTURE_2D, self.tex);
         }
         if self.native() {
@@ -433,10 +510,9 @@ impl Compositor {
 
 impl Compositor {
     fn in_game_rect(&mut self, draw: impl FnOnce(&mut Self)) {
-        if !self.native() {
+        let Some((x, top, w, h)) = self.game_area() else {
             return draw(self);
-        }
-        let (x, top, w, h) = crate::bezel::game_rect(self.window, self.sp_frame);
+        };
         self.game
             .set_fbo_scale(w as f32 / OUT_W as f32, h as f32 / OUT_H as f32);
         let y = self.size.1 as i32 - top - h;

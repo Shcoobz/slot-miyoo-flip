@@ -2,7 +2,7 @@ mod common;
 
 use common::{boot, tmp_root_with_carts};
 use slot::app::{App, Phase};
-use slot_input::{Action, Btn};
+use slot_input::Action;
 use slot_store::{read_slot_state, write_slot_state, Platform, SlotState};
 
 fn seated(cart: &str) -> SlotState {
@@ -328,12 +328,9 @@ fn a_named_shelf_that_no_longer_has_the_cart_is_an_empty_slot() {
 fn seating_a_cart_records_the_shelf_it_came_off() {
     let d = two_tetrises();
     let mut a = boot(d.path());
-    common::through(&mut a, Btn::R1);
-    assert_eq!(
-        a.selected_stem(),
-        Some("Tetris"),
-        "the shoulder did not ring to the Game Boy shelf"
-    );
+    // The Game Boy shelf comes before the GBA one, so the card opens on the Game Boy Tetris.
+    assert_eq!(a.shelf_platform_name(), Some("Game Boy"));
+    assert_eq!(a.selected_stem(), Some("Tetris"));
     a.apply(Action::Insert);
     a.on_core_ready();
     for _ in 0..120 {

@@ -55,8 +55,8 @@ fn a_long_label_is_set_as_large_as_a_short_one() {
 }
 
 #[test]
-fn the_fast_forward_row_offers_the_four_ceilings_the_card_can_hold() {
-    assert_eq!(FF_SPEEDS, [2, 3, 4, 6]);
+fn the_fast_forward_row_offers_the_five_ceilings_the_card_can_hold() {
+    assert_eq!(FF_SPEEDS, [2, 3, 4, 6, 8]);
     assert_eq!(
         FF_SPEEDS.map(QuickValue::speed),
         [
@@ -64,6 +64,7 @@ fn the_fast_forward_row_offers_the_four_ceilings_the_card_can_hold() {
             Some(QuickValue::Speed3),
             Some(QuickValue::Speed4),
             Some(QuickValue::Speed6),
+            Some(QuickValue::Speed8),
         ]
     );
     for other in [1, 5, 7, 9, 16, 28, 255] {
@@ -88,8 +89,11 @@ fn the_rows_run_in_the_order_the_user_chose() {
             "Wallpaper",
             "Wallpaper Tint",
             "Recents",
+            "Switcher Games",
             "Game Titles",
             "Lid Power Off",
+            "Dim Screen",
+            "Auto Sleep",
             "Date & Time"
         ]
     );
@@ -130,7 +134,11 @@ fn the_rows_run_in_the_order_the_user_chose() {
             "Turbo Buttons",
             "Rumble",
             "Left Stick as D-Pad",
-            "Auto Save on Eject"
+            "Auto Save on Eject",
+            "GBA Core",
+            "GB/GBC Core",
+            "NES Core",
+            "SNES Core"
         ]
     );
     let opens: Vec<QuickRow> = QuickRow::ALL.into_iter().filter(|r| r.opens()).collect();
@@ -156,7 +164,8 @@ fn the_rows_run_in_the_order_the_user_chose() {
             QuickRow::Controls,
             QuickRow::ControlsShelf,
             QuickRow::ControlsInGame,
-            QuickRow::ScreenGeneral
+            QuickRow::ScreenGeneral,
+            QuickRow::Cheats
         ]
     );
     for page in [
@@ -203,6 +212,7 @@ fn the_values_read_as_the_menu_prints_them() {
             "3×",
             "4×",
             "6×",
+            "8×",
             "On",
             "Off",
             "LCD3x",
@@ -232,6 +242,21 @@ fn the_values_read_as_the_menu_prints_them() {
             "7",
             "8",
             "9",
+            "mGBA",
+            "gpSP",
+            "Gambatte",
+            "3",
+            "5",
+            "10",
+            "FCEUmm",
+            "Nestopia",
+            "Snes9x",
+            "Snes9x 2005",
+            "15 s",
+            "30 s",
+            "2 min",
+            "Stretch",
+            "Sharp",
         ]
     );
     assert_eq!(QuickValue::flag(true), QuickValue::On);
@@ -330,10 +355,12 @@ fn the_in_game_pages_hold_their_rows_in_order() {
         [
             QuickRow::Resume,
             QuickRow::States,
+            QuickRow::Cheats,
             QuickRow::Settings,
             QuickRow::ExitGame
         ]
     );
+    assert_eq!(QuickRow::CheatList.parent_in_game(), Some(QuickRow::Cheats));
     assert_eq!(
         QuickRow::SETTINGS.map(QuickRow::label),
         ["Screen", "Gameplay", "Controls"]
@@ -341,8 +368,8 @@ fn the_in_game_pages_hold_their_rows_in_order() {
     assert_eq!(
         QuickRow::CONTROLS.map(QuickRow::label),
         [
-            "Up", "Down", "Left", "Right", "A Button", "B Button", "Select", "Start", "L Button",
-            "R Button", "Turbo A", "Turbo B"
+            "Up", "Down", "Left", "Right", "A Button", "B Button", "X Button", "Y Button",
+            "Select", "Start", "L Button", "R Button", "Turbo A", "Turbo B"
         ]
     );
     assert_eq!(
@@ -350,6 +377,7 @@ fn the_in_game_pages_hold_their_rows_in_order() {
         [
             QuickRow::Shader,
             QuickRow::Bezel,
+            QuickRow::Picture,
             QuickRow::Palette,
             QuickRow::ColourCorrection,
             QuickRow::PlayBrightness,
@@ -416,7 +444,7 @@ fn in_game_rows_read_as_the_menu_shows_them() {
 
 #[test]
 fn a_hidden_palette_and_bezel_leave_four_screen_rows() {
-    let hidden = [QuickRow::Palette, QuickRow::Bezel];
+    let hidden = [QuickRow::Palette, QuickRow::Bezel, QuickRow::Picture];
     assert_eq!(
         QuickRow::Shader.shown(&hidden),
         vec![
@@ -431,14 +459,19 @@ fn a_hidden_palette_and_bezel_leave_four_screen_rows() {
 
 #[test]
 fn the_in_game_screen_panel_shows_three_rows_and_scrolls_the_rest() {
-    assert_eq!(slot_ui::quick_window(QuickRow::Shader, &[]), (0, 3));
-    assert_eq!(slot_ui::quick_window(QuickRow::Palette, &[]), (1, 3));
+    // A handheld game: no Picture row, which only the NES and SNES show.
+    let handheld = [QuickRow::Picture];
+    assert_eq!(slot_ui::quick_window(QuickRow::Shader, &handheld), (0, 3));
+    assert_eq!(slot_ui::quick_window(QuickRow::Palette, &handheld), (1, 3));
     assert_eq!(
-        slot_ui::quick_window(QuickRow::ColourCorrection, &[]),
+        slot_ui::quick_window(QuickRow::ColourCorrection, &handheld),
         (2, 3)
     );
-    assert_eq!(slot_ui::quick_window(QuickRow::PlayBlueLight, &[]), (3, 3));
-    let hidden = [QuickRow::Palette, QuickRow::Bezel];
+    assert_eq!(
+        slot_ui::quick_window(QuickRow::PlayBlueLight, &handheld),
+        (3, 3)
+    );
+    let hidden = [QuickRow::Palette, QuickRow::Bezel, QuickRow::Picture];
     assert_eq!(
         slot_ui::quick_window(QuickRow::PlayBlueLight, &hidden),
         (1, 3)
@@ -447,7 +480,8 @@ fn the_in_game_screen_panel_shows_three_rows_and_scrolls_the_rest() {
 
 #[test]
 fn a_scroll_bar_shows_only_on_a_page_with_rows_out_of_sight() {
-    let top = slot_ui::quick_scroll(QuickRow::Shader, &[]).expect("six rows in three");
+    let top =
+        slot_ui::quick_scroll(QuickRow::Shader, &[QuickRow::Picture]).expect("six rows in three");
     assert!(
         (top.thumb_y - top.y).abs() < 0.5,
         "the thumb is not at the top"
@@ -456,7 +490,8 @@ fn a_scroll_bar_shows_only_on_a_page_with_rows_out_of_sight() {
         (top.thumb_h - top.h / 6.0).abs() < 0.5,
         "the thumb is not one row of six"
     );
-    let end = slot_ui::quick_scroll(QuickRow::PlayBlueLight, &[]).expect("six rows in three");
+    let end = slot_ui::quick_scroll(QuickRow::PlayBlueLight, &[QuickRow::Picture])
+        .expect("six rows in three");
     assert!(
         (end.thumb_y + end.thumb_h - (end.y + end.h)).abs() < 0.5,
         "the thumb is not at the bottom"
@@ -465,7 +500,24 @@ fn a_scroll_bar_shows_only_on_a_page_with_rows_out_of_sight() {
         slot_ui::quick_scroll(QuickRow::Shader, &[QuickRow::Palette, QuickRow::Bezel]).is_some(),
         "four rows in three still scroll"
     );
-    assert_eq!(slot_ui::quick_scroll(QuickRow::Rumble, &[]), None);
+    assert!(
+        slot_ui::quick_scroll(QuickRow::Rumble, &[]).is_some(),
+        "nine gameplay rows in six do not scroll"
+    );
+    assert_eq!(
+        slot_ui::quick_scroll(
+            QuickRow::Rumble,
+            &[
+                QuickRow::GbCore,
+                QuickRow::NesCore,
+                QuickRow::SnesCore,
+                QuickRow::LeftStick,
+                QuickRow::EjectSave
+            ]
+        ),
+        None,
+        "six rows in six still scroll"
+    );
     assert!(slot_ui::quick_scroll(QuickRow::GameUp, &[]).is_some());
 }
 
@@ -530,9 +582,14 @@ fn the_wallpaper_tint_reads_as_how_much_it_darkens() {
 #[test]
 fn show_titles_sits_under_recents_on_the_general_page() {
     let at = |r: QuickRow| QuickRow::GENERAL.iter().position(|g| *g == r);
+    // Switcher Games belongs with Recents, so Show Titles follows the pair.
+    assert_eq!(
+        at(QuickRow::SwitcherGames),
+        at(QuickRow::Recents).map(|i| i + 1)
+    );
     assert_eq!(
         at(QuickRow::ShowTitles),
-        at(QuickRow::Recents).map(|i| i + 1)
+        at(QuickRow::Recents).map(|i| i + 2)
     );
     assert_eq!(QuickRow::ShowTitles.parent(), Some(QuickRow::General));
 }

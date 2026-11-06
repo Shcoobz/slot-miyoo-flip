@@ -1,14 +1,15 @@
 use slot_store::{Cart, Platform};
 use slot_ui::{
     cart_box, draw_empty_slot, edge, foot_y, housing, icon_box, opening, recess, seated_box,
-    Canvas, Draw, Shelf, SlotChrome, TexId, ALERT_PX, CART_H, CART_W, GB_LABEL_H, GB_LABEL_Y,
-    LABEL_H, LABEL_Y, MOUTH_H, OUT_H, OUT_W,
+    shelf_box, Canvas, Draw, Shelf, SlotChrome, TexId, ALERT_PX, CART_W, GBA_SHELF_ZOOM,
+    GB_LABEL_H, GB_LABEL_Y, LABEL_H, LABEL_Y, MOUTH_H, OUT_H, OUT_W,
 };
 
-const CENTRED: f32 = (OUT_W - CART_W) as f32 / 2.0;
+/// Where the shelf stands a GBA cart: drawn GBA_SHELF_ZOOM larger than its face.
+const CENTRED: f32 = (OUT_W as f32 - CART_W as f32 * GBA_SHELF_ZOOM) / 2.0;
 
 fn centred(c: &Cart) -> f32 {
-    (OUT_W - cart_box(c.platform).0) as f32 / 2.0
+    (OUT_W as f32 - shelf_box(c.platform).0) / 2.0
 }
 
 fn cart() -> Cart {
@@ -43,6 +44,7 @@ fn label_band(c: &Cart) -> (f32, f32) {
     let (y, h) = match c.platform {
         Platform::Gba => (LABEL_Y as f32, LABEL_H as f32),
         Platform::Gb | Platform::Gbc => (GB_LABEL_Y as f32, GB_LABEL_H as f32),
+        Platform::Nes | Platform::Snes => unreachable!("only the GBA cart and the Game Boy pak"),
     };
     let k = seated_box(c.platform).1 as f32 / cart_box(c.platform).1 as f32;
     (y * k, h * k)
@@ -194,11 +196,11 @@ fn a_cart_the_row_had_not_finished_moving_slides_across_as_it_goes_in() {
     };
     let start = at(0.0);
     assert!(
-        (start.x - rest).abs() < 0.01 && (start.w - CART_W as f32 * scale).abs() < 0.01,
+        (start.x - rest).abs() < 0.01 && (start.w - shelf_box(c.platform).0 * scale).abs() < 0.01,
         "the cart starts at {start:?} rather than in the quad the row had it in"
     );
     assert!(
-        (start.y + start.h - foot_y(CART_H as f32)).abs() < 0.01,
+        (start.y + start.h - foot_y(shelf_box(c.platform).1)).abs() < 0.01,
         "the cart starts with its foot at {} rather than on the row's floor",
         start.y + start.h
     );
@@ -360,11 +362,11 @@ fn an_unseated_cart_stands_where_the_shelf_left_it() {
 fn a_cart_shrinks_to_the_slot_by_the_lip() {
     let lip = OUT_H as f32 - MOUTH_H;
     for (name, c) in both() {
-        let (w, h) = cart_box(c.platform);
+        let (w, h) = shelf_box(c.platform);
         let (sw, sh) = seated_box(c.platform);
         let start = cart_quad(&c, 0.0);
         assert!(
-            (start.w - w as f32).abs() < 0.01 && (start.h - h as f32).abs() < 0.01,
+            (start.w - w).abs() < 0.01 && (start.h - h).abs() < 0.01,
             "{name} leaves the shelf at {}x{} rather than its own {w}x{h}",
             start.w,
             start.h

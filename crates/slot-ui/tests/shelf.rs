@@ -1,9 +1,14 @@
 use slot_power::{Battery, Charge};
 use slot_store::{Cart, Platform};
 use slot_ui::{
-    draw_footer, footer_ink, label_colour, rest_y, Canvas, Draw, GbShell, Printed, Shelf, TexId,
-    CART_H, CART_W, GB_CART_H, GB_CART_W, LABEL_W, LABEL_X, LABEL_Y, OUT_W,
+    draw_footer, footer_ink, label_colour, rest_y, shelf_box, Canvas, Draw, GbShell, Printed,
+    Shelf, TexId, GBA_SHELF_ZOOM, GB_CART_H, GB_CART_W, LABEL_W, LABEL_X, LABEL_Y, OUT_W,
 };
+
+/// The size the shelf draws a GBA cart at.
+fn gba_box() -> (f32, f32) {
+    shelf_box(Platform::Gba)
+}
 
 fn shelf_with(n: usize) -> Shelf {
     Shelf::new(
@@ -143,7 +148,7 @@ fn one_cart_stands_alone_in_the_middle() {
     let row = placed(&s);
     assert_eq!(row.len(), 1, "a lone cart is not alone on the row");
     let (x, w) = row[0];
-    assert!((w - CART_W as f32).abs() < 0.5, "the lone cart is {w} wide");
+    assert!((w - gba_box().0).abs() < 0.5, "the lone cart is {w} wide");
     let centre = x + w / 2.0;
     assert!(
         (centre - 360.0).abs() < 0.5,
@@ -171,7 +176,7 @@ fn two_carts_repeat_around_the_ring() {
     );
     for (a, b) in [(centres[0], centres[1]), (centres[1], centres[2])] {
         assert!(
-            (b - a - CART_W as f32).abs() < 0.5,
+            (b - a - gba_box().0).abs() < 0.5,
             "the row is {} apart rather than one pitch",
             b - a
         );
@@ -317,7 +322,7 @@ fn the_shelf_says_where_its_selected_cart_stands() {
                 );
             }
             let (said_x, scale) = s.selected_at(Canvas::FRAMED);
-            let said = (said_x, CART_W as f32 * scale);
+            let said = (said_x, gba_box().0 * scale);
             assert!(
                 dropped
                     .iter()
@@ -390,7 +395,7 @@ fn the_selected_cart_is_centred_and_full_size() {
     let (x, w) = placed(&s)
         .into_iter()
         .fold((0.0, 0.0), |a, b| if b.1 > a.1 { b } else { a });
-    assert!((w - CART_W as f32).abs() < 0.5, "selected cart is {w} wide");
+    assert!((w - gba_box().0).abs() < 0.5, "selected cart is {w} wide");
     let centre = x + w / 2.0;
     assert!(
         (centre - 360.0).abs() < 0.5,
@@ -725,7 +730,8 @@ fn the_row_parts_for_the_cart_going_in() {
         out
     };
     let start = at(0.0);
-    let part = at(0.5);
+    // A quarter of the way: the zoomed GBA neighbours are already past the screen edge by half.
+    let part = at(0.25);
     assert_eq!(start.len(), part.len(), "a cart left the row early");
 
     let centre = OUT_W as f32 / 2.0;
@@ -1264,10 +1270,14 @@ fn only_a_starred_cart_wears_the_star_in_its_label_top_right_corner() {
         .collect();
     assert_eq!(stars.len(), 1, "{out:?}");
     let (right, top) = stars[0];
-    let x0 = 360.0 - CART_W as f32 / 2.0;
-    let y0 = rest_y(CART_H as f32);
-    let (lx, ly) = (x0 + LABEL_X as f32, y0 + LABEL_Y as f32);
-    let label_right = lx + LABEL_W as f32;
+    let (w, h) = gba_box();
+    let x0 = 360.0 - w / 2.0;
+    let y0 = rest_y(h);
+    let (lx, ly) = (
+        x0 + LABEL_X as f32 * GBA_SHELF_ZOOM,
+        y0 + LABEL_Y as f32 * GBA_SHELF_ZOOM,
+    );
+    let label_right = lx + LABEL_W as f32 * GBA_SHELF_ZOOM;
     assert!(
         right <= label_right && right > label_right - 16.0,
         "star right edge {right}, label right {label_right}"

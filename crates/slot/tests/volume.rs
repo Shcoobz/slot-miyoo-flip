@@ -49,3 +49,22 @@ fn gain_at(v: u8) -> f32 {
 fn a_level_above_the_maximum_is_clamped_rather_than_amplifying() {
     assert_eq!(volume::gain(200), volume::gain(100));
 }
+
+#[test]
+fn the_low_steps_stay_low_and_every_step_is_louder_than_the_one_below() {
+    let db = |v: u8| 20.0 * volume::gain(v).log10();
+    for v in (10..=100).step_by(5) {
+        assert!(db(v) > db(v - 5), "volume {v} is not louder than {}", v - 5);
+    }
+    assert!(
+        db(5) < -50.0,
+        "the quietest step is near silence, got {:.1} dB",
+        db(5)
+    );
+    assert!(
+        db(50) > -20.0,
+        "half volume is too quiet at {:.1} dB",
+        db(50)
+    );
+    assert!(db(100).abs() < 0.01);
+}

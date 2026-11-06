@@ -23,6 +23,8 @@ pub enum QuickRow {
     GbColourCorrection,
     Game,
     EjectSave,
+    GbaCore,
+    GbCore,
     Turbo,
     Rewind,
     GbPalette,
@@ -90,10 +92,22 @@ pub enum QuickRow {
     BlueLight,
     PlayBrightness,
     PlayBlueLight,
+    AutoSleep,
+    SwitcherGames,
+    Cheats,
+    /// The Cheats page's one row: the page lists the game's cheats, which the menu's own pages
+    /// cannot hold, so the app draws it and keeps which cheat is picked.
+    CheatList,
+    NesCore,
+    SnesCore,
+    GameX,
+    GameY,
+    DimScreen,
+    Picture,
 }
 
 impl QuickRow {
-    pub const ALL: [QuickRow; 79] = [
+    pub const ALL: [QuickRow; 91] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Screen,
@@ -106,6 +120,8 @@ impl QuickRow {
         QuickRow::GbColourCorrection,
         QuickRow::Game,
         QuickRow::EjectSave,
+        QuickRow::GbaCore,
+        QuickRow::GbCore,
         QuickRow::Turbo,
         QuickRow::Rewind,
         QuickRow::GbPalette,
@@ -173,6 +189,16 @@ impl QuickRow {
         QuickRow::BlueLight,
         QuickRow::PlayBrightness,
         QuickRow::PlayBlueLight,
+        QuickRow::AutoSleep,
+        QuickRow::SwitcherGames,
+        QuickRow::Cheats,
+        QuickRow::CheatList,
+        QuickRow::NesCore,
+        QuickRow::SnesCore,
+        QuickRow::GameX,
+        QuickRow::GameY,
+        QuickRow::DimScreen,
+        QuickRow::Picture,
     ];
 
     pub const MAIN: [QuickRow; 5] = [
@@ -183,13 +209,16 @@ impl QuickRow {
         QuickRow::About,
     ];
 
-    pub const GENERAL: [QuickRow; 7] = [
+    pub const GENERAL: [QuickRow; 10] = [
         QuickRow::Theme,
         QuickRow::Wallpaper,
         QuickRow::WallpaperTint,
         QuickRow::Recents,
+        QuickRow::SwitcherGames,
         QuickRow::ShowTitles,
         QuickRow::LidOff,
+        QuickRow::DimScreen,
+        QuickRow::AutoSleep,
         QuickRow::DateTime,
     ];
 
@@ -205,13 +234,15 @@ impl QuickRow {
         QuickRow::ShelfFavorite,
     ];
 
-    pub const CONTROLS: [QuickRow; 12] = [
+    pub const CONTROLS: [QuickRow; 14] = [
         QuickRow::GameUp,
         QuickRow::GameDown,
         QuickRow::GameLeft,
         QuickRow::GameRight,
         QuickRow::GameA,
         QuickRow::GameB,
+        QuickRow::GameX,
+        QuickRow::GameY,
         QuickRow::GameSelect,
         QuickRow::GameStart,
         QuickRow::GameL,
@@ -264,7 +295,7 @@ impl QuickRow {
         QuickRow::GbBezel,
     ];
 
-    pub const GAME: [QuickRow; 7] = [
+    pub const GAME: [QuickRow; 11] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Rewind,
@@ -272,14 +303,21 @@ impl QuickRow {
         QuickRow::Rumble,
         QuickRow::LeftStick,
         QuickRow::EjectSave,
+        QuickRow::GbaCore,
+        QuickRow::GbCore,
+        QuickRow::NesCore,
+        QuickRow::SnesCore,
     ];
 
-    pub const PLAY: [QuickRow; 4] = [
+    pub const PLAY: [QuickRow; 5] = [
         QuickRow::Resume,
         QuickRow::States,
+        QuickRow::Cheats,
         QuickRow::Settings,
         QuickRow::ExitGame,
     ];
+
+    pub const CHEATS: [QuickRow; 1] = [QuickRow::CheatList];
 
     pub const SETTINGS: [QuickRow; 3] = [
         QuickRow::PlayScreen,
@@ -287,9 +325,10 @@ impl QuickRow {
         QuickRow::PlayControls,
     ];
 
-    pub const PLAY_SCREEN: [QuickRow; 6] = [
+    pub const PLAY_SCREEN: [QuickRow; 7] = [
         QuickRow::Shader,
         QuickRow::Bezel,
+        QuickRow::Picture,
         QuickRow::Palette,
         QuickRow::ColourCorrection,
         QuickRow::PlayBrightness,
@@ -324,29 +363,41 @@ impl QuickRow {
             | QuickRow::Turbo
             | QuickRow::Rumble
             | QuickRow::LeftStick
-            | QuickRow::EjectSave => &QuickRow::GAME,
+            | QuickRow::EjectSave
+            | QuickRow::GbaCore
+            | QuickRow::GbCore
+            | QuickRow::NesCore
+            | QuickRow::SnesCore => &QuickRow::GAME,
             QuickRow::Wallpaper
             | QuickRow::WallpaperTint
             | QuickRow::DateTime
             | QuickRow::Theme
             | QuickRow::Recents
             | QuickRow::ShowTitles
-            | QuickRow::LidOff => &QuickRow::GENERAL,
+            | QuickRow::LidOff
+            | QuickRow::DimScreen
+            | QuickRow::AutoSleep
+            | QuickRow::SwitcherGames => &QuickRow::GENERAL,
             QuickRow::ControlsShelf | QuickRow::Shortcuts | QuickRow::ControlsInGame => {
                 &QuickRow::CONTROL_PAGES
             }
-            QuickRow::Resume | QuickRow::States | QuickRow::Settings | QuickRow::ExitGame => {
-                &QuickRow::PLAY
-            }
+            QuickRow::Resume
+            | QuickRow::States
+            | QuickRow::Cheats
+            | QuickRow::Settings
+            | QuickRow::ExitGame => &QuickRow::PLAY,
+            QuickRow::CheatList => &QuickRow::CHEATS,
             QuickRow::PlayScreen | QuickRow::PlayGameplay | QuickRow::PlayControls => {
                 &QuickRow::SETTINGS
             }
             r if r.game_button().is_some() => &QuickRow::CONTROLS,
             r if r.shortcut().is_some() => &QuickRow::SHORTCUTS,
             r if r.carousel_action().is_some() => &QuickRow::SHELF_KEYS,
-            QuickRow::Shader | QuickRow::ColourCorrection | QuickRow::Palette | QuickRow::Bezel => {
-                &QuickRow::PLAY_SCREEN
-            }
+            QuickRow::Shader
+            | QuickRow::ColourCorrection
+            | QuickRow::Palette
+            | QuickRow::Bezel
+            | QuickRow::Picture => &QuickRow::PLAY_SCREEN,
             _ => &QuickRow::MAIN,
         }
     }
@@ -360,6 +411,7 @@ impl QuickRow {
             QuickRow::GbShader => Some(QuickRow::ScreenGb),
             QuickRow::FastForward => Some(QuickRow::Game),
             QuickRow::PlayScreen => Some(QuickRow::Settings),
+            QuickRow::CheatList => Some(QuickRow::Cheats),
             QuickRow::Shader => Some(QuickRow::PlayScreen),
             QuickRow::GameUp => Some(QuickRow::ControlsInGame),
             QuickRow::ScSave => Some(QuickRow::Shortcuts),
@@ -445,6 +497,10 @@ impl QuickRow {
             QuickRow::GbcColourCorrection => "Color Correction",
             QuickRow::Game => "Gameplay",
             QuickRow::EjectSave => "Auto Save on Eject",
+            QuickRow::GbaCore => "GBA Core",
+            QuickRow::GbCore => "GB/GBC Core",
+            QuickRow::NesCore => "NES Core",
+            QuickRow::SnesCore => "SNES Core",
             QuickRow::Turbo => "Turbo Buttons",
             QuickRow::Rewind => "Rewind",
             QuickRow::GbPalette => "Palette",
@@ -459,6 +515,10 @@ impl QuickRow {
             QuickRow::ExitGame => "Exit Game",
             QuickRow::General => "General",
             QuickRow::LidOff => "Lid Power Off",
+            QuickRow::AutoSleep => "Auto Sleep",
+            QuickRow::DimScreen => "Dim Screen",
+            QuickRow::Picture => "Picture",
+            QuickRow::SwitcherGames => "Switcher Games",
             QuickRow::Controls => "Controls",
             QuickRow::ControlsShelf => "Shelf",
             QuickRow::ControlsInGame => "In-Game",
@@ -470,6 +530,8 @@ impl QuickRow {
             | QuickRow::GameRight
             | QuickRow::GameA
             | QuickRow::GameB
+            | QuickRow::GameX
+            | QuickRow::GameY
             | QuickRow::GameSelect
             | QuickRow::GameStart
             | QuickRow::GameL
@@ -504,6 +566,8 @@ impl QuickRow {
             QuickRow::GbcBezel => "Bezel",
             QuickRow::GbaBezel => "Bezel",
             QuickRow::Bezel => "Bezel",
+            QuickRow::Cheats => "Cheats",
+            QuickRow::CheatList => "Cheat",
         }
     }
 
@@ -530,6 +594,7 @@ impl QuickRow {
                 | QuickRow::ScreenGbc
                 | QuickRow::ScreenGb
                 | QuickRow::ScreenGeneral
+                | QuickRow::Cheats
         )
     }
 
@@ -547,6 +612,8 @@ impl QuickRow {
             QuickRow::GameR => GameButton::R,
             QuickRow::GameTurboA => GameButton::TurboA,
             QuickRow::GameTurboB => GameButton::TurboB,
+            QuickRow::GameX => GameButton::X,
+            QuickRow::GameY => GameButton::Y,
             _ => return None,
         })
     }
@@ -602,6 +669,7 @@ pub enum QuickValue {
     Speed3,
     Speed4,
     Speed6,
+    Speed8,
     On,
     Off,
     Lcd3x,
@@ -631,14 +699,30 @@ pub enum QuickValue {
     Level7,
     Level8,
     Level9,
+    CoreMgba,
+    CoreGpsp,
+    CoreGambatte,
+    Count3,
+    Count5,
+    Count10,
+    CoreFceumm,
+    CoreNestopia,
+    CoreSnes9x,
+    CoreSnes9x2005,
+    Sec15,
+    Sec30,
+    Min2,
+    Stretch,
+    Sharp,
 }
 
 impl QuickValue {
-    pub const ALL: [QuickValue; 33] = [
+    pub const ALL: [QuickValue; 49] = [
         QuickValue::Speed2,
         QuickValue::Speed3,
         QuickValue::Speed4,
         QuickValue::Speed6,
+        QuickValue::Speed8,
         QuickValue::On,
         QuickValue::Off,
         QuickValue::Lcd3x,
@@ -668,6 +752,21 @@ impl QuickValue {
         QuickValue::Level7,
         QuickValue::Level8,
         QuickValue::Level9,
+        QuickValue::CoreMgba,
+        QuickValue::CoreGpsp,
+        QuickValue::CoreGambatte,
+        QuickValue::Count3,
+        QuickValue::Count5,
+        QuickValue::Count10,
+        QuickValue::CoreFceumm,
+        QuickValue::CoreNestopia,
+        QuickValue::CoreSnes9x,
+        QuickValue::CoreSnes9x2005,
+        QuickValue::Sec15,
+        QuickValue::Sec30,
+        QuickValue::Min2,
+        QuickValue::Stretch,
+        QuickValue::Sharp,
     ];
 
     pub const LEVELS: [QuickValue; 10] = [
@@ -702,6 +801,7 @@ impl QuickValue {
             QuickValue::Speed3 => "3×",
             QuickValue::Speed4 => "4×",
             QuickValue::Speed6 => "6×",
+            QuickValue::Speed8 => "8×",
             QuickValue::On => "On",
             QuickValue::Off => "Off",
             QuickValue::Lcd3x => "LCD3x",
@@ -720,6 +820,16 @@ impl QuickValue {
             QuickValue::Min5 => "5 min",
             QuickValue::Min10 => "10 min",
             QuickValue::Min15 => "15 min",
+            QuickValue::CoreMgba => "mGBA",
+            QuickValue::CoreGpsp => "gpSP",
+            QuickValue::CoreGambatte => "Gambatte",
+            QuickValue::CoreFceumm => "FCEUmm",
+            QuickValue::CoreNestopia => "Nestopia",
+            QuickValue::CoreSnes9x => "Snes9x",
+            QuickValue::CoreSnes9x2005 => "Snes9x 2005",
+            QuickValue::Count3 => "3",
+            QuickValue::Count5 => "5",
+            QuickValue::Count10 => "10",
             QuickValue::Min30 => "30 min",
             QuickValue::Level0 => "0",
             QuickValue::Level1 => "1",
@@ -731,6 +841,11 @@ impl QuickValue {
             QuickValue::Level7 => "7",
             QuickValue::Level8 => "8",
             QuickValue::Level9 => "9",
+            QuickValue::Sec15 => "15 s",
+            QuickValue::Sec30 => "30 s",
+            QuickValue::Min2 => "2 min",
+            QuickValue::Stretch => "Stretch",
+            QuickValue::Sharp => "Sharp",
         }
     }
 
@@ -744,6 +859,58 @@ impl QuickValue {
             3 => Some(QuickValue::Speed3),
             4 => Some(QuickValue::Speed4),
             6 => Some(QuickValue::Speed6),
+            8 => Some(QuickValue::Speed8),
+            _ => None,
+        }
+    }
+
+    pub fn core(core: slot_store::Core) -> QuickValue {
+        match core {
+            slot_store::Core::Mgba => QuickValue::CoreMgba,
+            slot_store::Core::Gpsp => QuickValue::CoreGpsp,
+            slot_store::Core::Gambatte => QuickValue::CoreGambatte,
+            slot_store::Core::Fceumm => QuickValue::CoreFceumm,
+            slot_store::Core::Nestopia => QuickValue::CoreNestopia,
+            slot_store::Core::Snes9x => QuickValue::CoreSnes9x,
+            slot_store::Core::Snes9x2005 => QuickValue::CoreSnes9x2005,
+        }
+    }
+
+    /// The Auto Sleep row's steps: off, then minutes.
+    pub const AUTO_SLEEP: [QuickValue; 5] = [
+        QuickValue::Off,
+        QuickValue::Min1,
+        QuickValue::Min3,
+        QuickValue::Min5,
+        QuickValue::Min10,
+    ];
+
+    /// The Dim Screen row's steps: off, then seconds.
+    pub const DIM_SCREEN: [QuickValue; 5] = [
+        QuickValue::Off,
+        QuickValue::Sec15,
+        QuickValue::Sec30,
+        QuickValue::Min1,
+        QuickValue::Min2,
+    ];
+
+    /// How long a Dim Screen step waits, in seconds; 0 for Off.
+    pub fn seconds(self) -> Option<u16> {
+        Some(match self {
+            QuickValue::Off => 0,
+            QuickValue::Sec15 => 15,
+            QuickValue::Sec30 => 30,
+            QuickValue::Min1 => 60,
+            QuickValue::Min2 => 120,
+            _ => return None,
+        })
+    }
+
+    pub fn count(n: u8) -> Option<QuickValue> {
+        match n {
+            3 => Some(QuickValue::Count3),
+            5 => Some(QuickValue::Count5),
+            10 => Some(QuickValue::Count10),
             _ => None,
         }
     }
@@ -991,6 +1158,31 @@ pub fn core_button_legends() -> Vec<UndoFace> {
             true,
         ),
         with_hint(button_face(ButtonLegend::A), "Choose", None, false),
+        with_hint(button_face(ButtonLegend::Y), "Delete", None, false),
+    ]
+}
+
+/// The folder menu's Back, Change and Select.
+pub fn folder_button_legends() -> Vec<UndoFace> {
+    vec![
+        with_hint(button_face(ButtonLegend::B), "Back", None, true),
+        with_hint(
+            button_pair(ButtonLegend::Left, ButtonLegend::Right),
+            "Change",
+            None,
+            true,
+        ),
+        with_hint(button_face(ButtonLegend::A), "Select", None, false),
+    ]
+}
+
+/// The name entry's Delete, Letters, End and Type.
+pub fn name_entry_legends() -> Vec<UndoFace> {
+    vec![
+        with_hint(button_face(ButtonLegend::B), "Delete", None, true),
+        with_hint(button_face(ButtonLegend::Select), "Letters", None, true),
+        with_hint(button_face(ButtonLegend::Start), "End", None, true),
+        with_hint(button_face(ButtonLegend::A), "Type", None, false),
     ]
 }
 
@@ -1034,7 +1226,12 @@ pub fn prompt_legends(ink: [u8; 3], no: &str, yes: &str) -> [UndoFace; 2] {
 }
 
 /// `hint_on_right` puts the word after the button, for a legend parked on the left of the footer.
-fn with_hint(button: UndoFace, label: &str, ink: Option<[u8; 3]>, hint_on_right: bool) -> UndoFace {
+pub(crate) fn with_hint(
+    button: UndoFace,
+    label: &str,
+    ink: Option<[u8; 3]>,
+    hint_on_right: bool,
+) -> UndoFace {
     let word = match ink {
         Some(ink) => word_ink(label, ink),
         None => word_face(label),
@@ -1052,7 +1249,7 @@ fn with_hint(button: UndoFace, label: &str, ink: Option<[u8; 3]>, hint_on_right:
     UndoFace { rgba, w, h }
 }
 
-fn button_face(which: ButtonLegend) -> UndoFace {
+pub(crate) fn button_face(which: ButtonLegend) -> UndoFace {
     let (rgba, w, h) = button_legend(which);
     UndoFace {
         rgba: rgba.to_vec(),
@@ -1274,6 +1471,7 @@ fn scrolls(page: &[QuickRow]) -> bool {
         &QuickRow::CONTROLS[..],
         &QuickRow::SHORTCUTS,
         &QuickRow::GENERAL,
+        &QuickRow::GAME,
         &QuickRow::PLAY_SCREEN,
     ]
     .contains(&page)

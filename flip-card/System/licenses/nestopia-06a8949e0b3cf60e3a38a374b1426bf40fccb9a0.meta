@@ -1,0 +1,4 @@
+commit=06a8949e0b3cf60e3a38a374b1426bf40fccb9a0
+source=https://github.com/libretro/nestopia/archive/06a8949e0b3cf60e3a38a374b1426bf40fccb9a0.tar.gz
+recipe=make -C libretro platform=unix
+device_cflags=-mcpu=cortex-a55 -O2 -DNDEBUG

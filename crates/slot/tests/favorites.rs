@@ -57,7 +57,7 @@ fn names(a: &mut App) -> Vec<&'static str> {
 }
 
 #[test]
-fn y_on_the_shelf_stars_the_cart_and_saves_it_without_a_banner() {
+fn y_on_the_shelf_stars_the_cart_saves_it_and_says_so() {
     let d = card();
     let mut a = boot_with(d.path(), SlotState::default());
     assert!(matches!(a.phase(), Phase::Shelf), "{:?}", a.phase());
@@ -65,9 +65,10 @@ fn y_on_the_shelf_stars_the_cart_and_saves_it_without_a_banner() {
     press(&mut a, Btn::Y);
     assert_eq!(
         read_slot_state(d.path()).favorites,
-        [favorite(Platform::Gba, &stem)]
+        [favorite(Platform::Gb, &stem)],
+        "the card opens on its first shelf, the Game Boy one"
     );
-    assert_eq!(a.toast(), None);
+    assert_eq!(a.toast(), Some(slot_ui::Toast::FavoriteAdded));
     assert_eq!(
         a.selected_stem(),
         Some(stem.as_str()),
@@ -129,7 +130,7 @@ fn unstarring_on_the_favorites_shelf_takes_the_cart_off_it() {
     go_to(&mut a, "Favorites");
     assert_eq!(a.selected_stem(), Some("Emerald"));
     press(&mut a, Btn::Y);
-    assert_eq!(a.toast(), None);
+    assert_eq!(a.toast(), Some(slot_ui::Toast::FavoriteRemoved));
     assert_eq!(a.shelf_platform_name(), Some("Favorites"));
     assert_eq!(a.selected_stem(), Some("Tetris"));
     assert_eq!(

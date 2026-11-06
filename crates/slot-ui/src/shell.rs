@@ -54,6 +54,12 @@ pub const DUAL_MODE_SHELL: Shell = shell([0x33, 0x30, 0x31], Finish::Solid);
 
 pub const GB_CLEAR_SHELL: Shell = shell([0x7c, 0x7a, 0x8a], Finish::Translucent);
 
+/// The NES (EU) cart's grey and the SNES (EU) cart's lighter grey: the mean plastic of the
+/// design's fronts (`NES SNES Carts.dc.html`, 2a and 2b), which the neutral shells were measured
+/// against, so these give the design's carts back exactly.
+pub const NES_SHELL: Shell = shell([0x87, 0x87, 0x8b], Finish::Solid);
+pub const SNES_SHELL: Shell = shell([0xc1, 0xbf, 0xbb], Finish::Solid);
+
 const GB_CODES: &[(&str, Shell)] = &[
     ("AAU", shell([0xb3, 0x8b, 0x3a], Finish::Solid)),
     ("AAUJ", DUAL_MODE_SHELL),
@@ -90,6 +96,8 @@ pub fn shell_for(cart: &Cart) -> Shell {
     match cart.platform {
         Platform::Gba => gba_shell_for(&gba_code(cart)),
         Platform::Gb | Platform::Gbc => gb_shell_for(&cart.rom),
+        Platform::Nes => NES_SHELL,
+        Platform::Snes => SNES_SHELL,
     }
 }
 
@@ -236,6 +244,8 @@ pub fn shell_presets() -> Vec<(&'static str, Shell)> {
         ("Game Boy Color clear", GB_CLEAR_SHELL),
         ("Advance charcoal", DEFAULT_SHELL),
         ("Advance Video grey", FAMILY[0].1),
+        ("NES grey", NES_SHELL),
+        ("Super Nintendo grey", SNES_SHELL),
     ];
     out.extend(
         GBA.iter()

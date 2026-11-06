@@ -39,6 +39,35 @@ impl Power {
         self.platform.headphones()
     }
 
+    pub fn on_a_computer(&self) -> bool {
+        self.platform.on_a_computer()
+    }
+
+    pub fn route_audio(&mut self, headphones: bool) {
+        self.platform.route_audio(headphones)
+    }
+
+    pub fn set_volume(&mut self, volume: u8, headphones: bool) {
+        self.platform.set_volume(volume, headphones)
+    }
+
+    /// The picture's share of full brightness at the backlight step last set.
+    pub fn picture_dim(&self) -> f32 {
+        self.platform.picture_dim(self.level)
+    }
+
+    pub fn hardware_volume(&self) -> bool {
+        self.platform.hardware_volume()
+    }
+
+    pub fn cap_cpu(&mut self, khz: u32) {
+        self.platform.cap_cpu(khz)
+    }
+
+    pub fn suspend(&mut self, wake_after: Option<Duration>) -> bool {
+        self.platform.suspend(wake_after)
+    }
+
     pub fn card_read_only(&self) -> bool {
         self.platform.card_read_only()
     }

@@ -255,3 +255,23 @@ fn a_second_retirement_in_the_same_second_does_not_overwrite_the_first() {
     assert_eq!(std::fs::read(&first).unwrap(), [1u8; 8], "the first went");
     assert_eq!(std::fs::read(&second).unwrap(), [2u8; 8]);
 }
+
+#[test]
+fn the_resume_thumb_round_trips_only_beside_a_resume_state() {
+    let d = tempdir().unwrap();
+    let r = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
+    r.write_resume_thumb(b"png").unwrap();
+    assert!(r.resume_thumb().is_none(), "a thumb without a resume state");
+    r.write_resume(&[1; 8]).unwrap();
+    let thumb = r.resume_thumb().unwrap();
+    assert_eq!(std::fs::read(thumb).unwrap(), b"png");
+    assert!(
+        r.list().unwrap().is_empty(),
+        "the resume thumb joined the ring"
+    );
+    r.retire_resume("2026-08-09_00-00-00").unwrap();
+    assert!(
+        r.resume_thumb().is_none(),
+        "a retired resume kept its thumb"
+    );
+}

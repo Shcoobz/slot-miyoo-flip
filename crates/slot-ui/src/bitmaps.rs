@@ -9,12 +9,20 @@ pub enum Mould {
     Gba,
     Notched,
     Rounded,
+    Nes,
+    Snes,
 }
 
 pub const GBA_CART_W: u32 = 360;
 pub const GBA_CART_H: u32 = 212;
 pub const GB_CART_W: u32 = 312;
 pub const GB_CART_H: u32 = 337;
+/// The NES (EU) cart front, 1:1 with the design's 290x340 (`NES SNES Carts.dc.html`, 2a).
+pub const NES_CART_W: u32 = 290;
+pub const NES_CART_H: u32 = 340;
+/// The SNES (EU) cart front, 1:1 with the design's 360x240 (2b).
+pub const SNES_CART_W: u32 = 360;
+pub const SNES_CART_H: u32 = 240;
 pub const BOARD_W: u32 = GBA_CART_W;
 pub const BOARD_H: u32 = GBA_CART_H;
 pub const SOCKET_W: u32 = 64;
@@ -39,7 +47,19 @@ const GBA_INTERIOR_PNG: &[u8] = include_bytes!("../../../assets/gba_interior.png
 const GB_INTERIOR_PNG: &[u8] = include_bytes!("../../../assets/gb_interior.png");
 const GBC_INTERIOR_PNG: &[u8] = include_bytes!("../../../assets/gbc_interior.png");
 const GB_BOARD_PNG: &[u8] = include_bytes!("../../../assets/gb_board.png");
+/// `gb_board.png` with the left chip cleared, so the core sockets fit on an opened pak.
+const GB_BOARD_OPEN_PNG: &[u8] = include_bytes!("../../../assets/gb_board_open.png");
 const BOARD_PNG: &[u8] = include_bytes!("../../../assets/board.png");
+// The NES and SNES art is baked from the design's CSS: the front in the design's colours (its
+// alpha is the silhouette), the back plastic, and the board on a transparent sheet the size of the
+// cart, where the design's open view (2c, 2d) puts it. Sockets, chip, core names and ROM title are
+// left off: Slot draws those.
+const NES_CART_PNG: &[u8] = include_bytes!("../../../assets/nes_cart.png");
+const NES_INTERIOR_PNG: &[u8] = include_bytes!("../../../assets/nes_interior.png");
+const NES_BOARD_PNG: &[u8] = include_bytes!("../../../assets/nes_board.png");
+const SNES_CART_PNG: &[u8] = include_bytes!("../../../assets/snes_cart.png");
+const SNES_INTERIOR_PNG: &[u8] = include_bytes!("../../../assets/snes_interior.png");
+const SNES_BOARD_PNG: &[u8] = include_bytes!("../../../assets/snes_board.png");
 const SOCKET_PNG: &[u8] = include_bytes!("../../../assets/socket.png");
 const CHIP_PNG: &[u8] = include_bytes!("../../../assets/chip.png");
 const SLOT_BACK_DARK_PNG: &[u8] = include_bytes!("../../../assets/slot_back_dark.png");
@@ -105,7 +125,7 @@ fn crop_centre(src: &[u8], sw: u32, sh: u32, w: u32) -> Vec<u8> {
     out
 }
 
-fn scale(src: &[u8], sw: u32, sh: u32, w: u32, h: u32) -> Vec<u8> {
+pub(crate) fn scale(src: &[u8], sw: u32, sh: u32, w: u32, h: u32) -> Vec<u8> {
     let mut out = vec![0u8; (w * h * 4) as usize];
     for y in 0..h {
         let sy = y * sh / h;
@@ -158,6 +178,48 @@ pub fn gbc_interior() -> &'static [u8] {
 pub fn gb_board() -> &'static [u8] {
     static P: OnceLock<Vec<u8>> = OnceLock::new();
     load(GB_BOARD_PNG, GB_CART_W, GB_CART_H, &P)
+}
+
+/// The Game Boy PCB an opened pak shows in the core picker, from `assets/gb_board_open.png`.
+pub fn gb_board_open() -> &'static [u8] {
+    static P: OnceLock<Vec<u8>> = OnceLock::new();
+    load(GB_BOARD_OPEN_PNG, GB_CART_W, GB_CART_H, &P)
+}
+
+/// The NES front in the design's own grey, from `assets/nes_cart.png`.
+pub fn nes_cart() -> &'static [u8] {
+    static P: OnceLock<Vec<u8>> = OnceLock::new();
+    load(NES_CART_PNG, NES_CART_W, NES_CART_H, &P)
+}
+
+/// The back of an NES cart, from `assets/nes_interior.png`: neutral grey, like the Game Boy backs.
+pub fn nes_interior() -> &'static [u8] {
+    static P: OnceLock<Vec<u8>> = OnceLock::new();
+    load(NES_INTERIOR_PNG, NES_CART_W, NES_CART_H, &P)
+}
+
+/// The NES board in the lower half of a cart-sized transparent sheet, from `assets/nes_board.png`.
+pub fn nes_board() -> &'static [u8] {
+    static P: OnceLock<Vec<u8>> = OnceLock::new();
+    load(NES_BOARD_PNG, NES_CART_W, NES_CART_H, &P)
+}
+
+/// The SNES front in the design's own grey, from `assets/snes_cart.png`.
+pub fn snes_cart() -> &'static [u8] {
+    static P: OnceLock<Vec<u8>> = OnceLock::new();
+    load(SNES_CART_PNG, SNES_CART_W, SNES_CART_H, &P)
+}
+
+/// The back of an SNES cart, from `assets/snes_interior.png`.
+pub fn snes_interior() -> &'static [u8] {
+    static P: OnceLock<Vec<u8>> = OnceLock::new();
+    load(SNES_INTERIOR_PNG, SNES_CART_W, SNES_CART_H, &P)
+}
+
+/// The SNES board on a cart-sized transparent sheet, from `assets/snes_board.png`.
+pub fn snes_board() -> &'static [u8] {
+    static P: OnceLock<Vec<u8>> = OnceLock::new();
+    load(SNES_BOARD_PNG, SNES_CART_W, SNES_CART_H, &P)
 }
 
 pub fn board() -> &'static [u8] {
@@ -243,6 +305,10 @@ const GBC_SHELL_PNG: &[u8] = include_bytes!("../../../assets/gbc_neutral.png");
 const GBA_CLEAR_PNG: &[u8] = include_bytes!("../../../assets/gba_clear.png");
 const GB_CLEAR_PNG: &[u8] = include_bytes!("../../../assets/gb_neutral.png");
 const GBC_CLEAR_PNG: &[u8] = include_bytes!("../../../assets/gbc_clear.png");
+/// The NES and SNES fronts as neutral grey, measured so that the default shell colour gives the
+/// design's plastic back. They have no clear file: a clear one is the neutral shell at 80%.
+const NES_SHELL_PNG: &[u8] = include_bytes!("../../../assets/nes_neutral.png");
+const SNES_SHELL_PNG: &[u8] = include_bytes!("../../../assets/snes_neutral.png");
 
 /// The neutral shell asset for a mould, opaque or the separate clear one. The game's colour is
 /// blended onto it by the caller.
@@ -253,6 +319,8 @@ pub fn shell_asset(mould: Mould, clear: bool) -> &'static [u8] {
     static GBA_CLEAR: OnceLock<Vec<u8>> = OnceLock::new();
     static GB_CLEAR: OnceLock<Vec<u8>> = OnceLock::new();
     static GBC_CLEAR: OnceLock<Vec<u8>> = OnceLock::new();
+    static NES: OnceLock<Vec<u8>> = OnceLock::new();
+    static SNES: OnceLock<Vec<u8>> = OnceLock::new();
     let (bytes, w, h, slot) = match (mould, clear) {
         (Mould::Gba, false) => (GBA_SHELL_PNG, GBA_CART_W, GBA_CART_H, &GBA),
         (Mould::Notched, false) => (GB_SHELL_PNG, GB_CART_W, GB_CART_H, &GB),
@@ -260,6 +328,8 @@ pub fn shell_asset(mould: Mould, clear: bool) -> &'static [u8] {
         (Mould::Gba, true) => (GBA_CLEAR_PNG, GBA_CART_W, GBA_CART_H, &GBA_CLEAR),
         (Mould::Notched, true) => (GB_CLEAR_PNG, GB_CART_W, GB_CART_H, &GB_CLEAR),
         (Mould::Rounded, true) => (GBC_CLEAR_PNG, GB_CART_W, GB_CART_H, &GBC_CLEAR),
+        (Mould::Nes, _) => (NES_SHELL_PNG, NES_CART_W, NES_CART_H, &NES),
+        (Mould::Snes, _) => (SNES_SHELL_PNG, SNES_CART_W, SNES_CART_H, &SNES),
     };
     load(bytes, w, h, slot)
 }
@@ -274,9 +344,10 @@ pub(crate) enum ButtonLegend {
     Select,
     X,
     Y,
+    Start,
 }
 
-const BUTTON_LEGEND_PNG: [&[u8]; 7] = [
+const BUTTON_LEGEND_PNG: [&[u8]; 8] = [
     include_bytes!("../../../assets/buttonlegend_round_a.png"),
     include_bytes!("../../../assets/buttonlegend_round_b.png"),
     include_bytes!("../../../assets/buttonlegend_dpad_left.png"),
@@ -284,6 +355,7 @@ const BUTTON_LEGEND_PNG: [&[u8]; 7] = [
     include_bytes!("../../../assets/buttonlegend_long_select.png"),
     include_bytes!("../../../assets/buttonlegend_round_x.png"),
     include_bytes!("../../../assets/buttonlegend_round_y.png"),
+    include_bytes!("../../../assets/buttonlegend_long_start.png"),
 ];
 
 pub(crate) fn button_legend(which: ButtonLegend) -> (&'static [u8], u32, u32) {

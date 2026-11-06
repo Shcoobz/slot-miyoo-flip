@@ -1,5 +1,5 @@
 use slot_store::{Cart, Platform};
-use slot_ui::{draw_empty_slot, shelf_cart, Canvas, Draw, Shelf, TexId, CART_W, SLOT_W};
+use slot_ui::{draw_empty_slot, shelf_box, shelf_cart, Canvas, Draw, Shelf, TexId, SLOT_W};
 
 const NATIVE: Canvas = Canvas { w: 640.0, h: 480.0 };
 
@@ -22,7 +22,7 @@ fn carts(stems: &[&str]) -> Vec<Cart> {
 fn the_selected_cart_centres_on_a_native_canvas() {
     let shelf = Shelf::new(carts(&["Emerald", "Fusion", "Zelda"]));
     let (x, scale) = shelf.selected_at(NATIVE);
-    let w = CART_W as f32 * scale;
+    let w = shelf_box(Platform::Gba).0 * scale;
     assert_eq!(x + w / 2.0, 320.0);
     let placed = shelf_cart(NATIVE);
     assert_eq!(placed.x + placed.w / 2.0, 320.0);

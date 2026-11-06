@@ -10,9 +10,17 @@ pub const SRC_H: u32 = OUT_H / SCALE;
 
 pub const WHOLE_TEXTURE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
+/// The biggest game frame the texture takes; a bigger one is not shown. SNES hi-res interlaced
+/// is 512x448 (478 with overscan).
+pub const GAME_MAX_W: u32 = 1024;
+pub const GAME_MAX_H: u32 = 512;
+
 pub struct GamePass {
     prog: gl::types::GLuint,
     game: gl::types::GLuint,
+    /// The game texture's width and height: 240x160 for GBA and Game Boy, else the core's frame.
+    game_size: (u32, u32),
+    u_src: gl::types::GLint,
     u_rect: gl::types::GLint,
     u_bright: gl::types::GLint,
     u_uv: gl::types::GLint,
@@ -46,15 +54,12 @@ impl GamePass {
             crate::gl::gray_format(),
             Some(&[255]),
         );
-        let (u_rect, u_bright, u_uv, u_mode, u_paper_size, u_pic, u_fbo, u_origin);
+        let (u_src, u_rect, u_bright, u_uv, u_mode, u_paper_size, u_pic, u_fbo, u_origin);
         unsafe {
             gl::UseProgram(prog);
             gl::Uniform1i(crate::gl::uniform_location(prog, "u_game"), 0);
-            gl::Uniform2f(
-                crate::gl::uniform_location(prog, "u_src"),
-                SRC_W as f32,
-                SRC_H as f32,
-            );
+            u_src = crate::gl::uniform_location(prog, "u_src");
+            gl::Uniform2f(u_src, SRC_W as f32, SRC_H as f32);
             gl::Uniform2f(
                 crate::gl::uniform_location(prog, "u_target"),
                 OUT_W as f32,
@@ -73,6 +78,8 @@ impl GamePass {
         Ok(GamePass {
             prog,
             game,
+            game_size: (SRC_W, SRC_H),
+            u_src,
             u_rect,
             u_bright,
             u_uv,
@@ -153,39 +160,71 @@ impl GamePass {
     }
 
     pub fn upload(&mut self, xrgb8888: &[u8]) {
-        if xrgb8888.len() < (SRC_W * SRC_H * 4) as usize {
+        self.upload_sized(xrgb8888, SRC_W, SRC_H);
+    }
+
+    /// Uploads a `w`x`h` frame, packed. The texture takes the frame's size, so a NES or SNES
+    /// frame is never cut, and is made again only when the size changes.
+    pub fn upload_sized(&mut self, xrgb8888: &[u8], w: u32, h: u32) {
+        if w == 0 || h == 0 || w > GAME_MAX_W || h > GAME_MAX_H {
             return;
         }
+        if xrgb8888.len() < (w * h * 4) as usize {
+            return;
+        }
+        let pixels = xrgb8888.as_ptr() as *const std::ffi::c_void;
         unsafe {
             gl::BindTexture(gl::TEXTURE_2D, self.game);
             gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+            if (w, h) != self.game_size {
+                gl::TexImage2D(
+                    gl::TEXTURE_2D,
+                    0,
+                    crate::gl::internal_format(gl::BGRA),
+                    w as i32,
+                    h as i32,
+                    0,
+                    gl::BGRA,
+                    gl::UNSIGNED_BYTE,
+                    pixels,
+                );
+                self.game_size = (w, h);
+                return;
+            }
             gl::TexSubImage2D(
                 gl::TEXTURE_2D,
                 0,
                 0,
                 0,
-                SRC_W as i32,
-                SRC_H as i32,
+                w as i32,
+                h as i32,
                 gl::BGRA,
                 gl::UNSIGNED_BYTE,
-                xrgb8888.as_ptr() as *const std::ffi::c_void,
+                pixels,
             );
         }
     }
 
+    /// The width and height of the last frame uploaded.
+    pub fn game_size(&self) -> (u32, u32) {
+        self.game_size
+    }
+
     pub fn draw(&self, quad: &Quad) {
         let src = match self.effect {
-            ScreenEffect::Grid => whole_scale_source(self.src, self.fbo_scale),
+            ScreenEffect::Grid => whole_scale_source(self.src, self.fbo_scale, self.game_size),
             _ => self.src,
         };
-        self.draw_source(self.game, quad, src);
+        self.draw_source(self.game, self.game_size, quad, src);
     }
 
-    pub fn draw_still(&self, tex: gl::types::GLuint, quad: &Quad) {
-        self.draw_source(tex, quad, WHOLE_TEXTURE);
+    /// Draws a still picture where the game goes; `size` is its texture's, for the effects'
+    /// pixel grid.
+    pub fn draw_still(&self, tex: gl::types::GLuint, size: (u32, u32), quad: &Quad) {
+        self.draw_source(tex, size, quad, WHOLE_TEXTURE);
     }
 
-    fn draw_source(&self, tex: gl::types::GLuint, quad: &Quad, src: [f32; 4]) {
+    fn draw_source(&self, tex: gl::types::GLuint, size: (u32, u32), quad: &Quad, src: [f32; 4]) {
         let (x, y, w, h) = self.placed();
         let bright = if self.fills {
             1.0
@@ -200,6 +239,7 @@ impl GamePass {
         }
         unsafe {
             gl::UseProgram(self.prog);
+            gl::Uniform2f(self.u_src, size.0 as f32, size.1 as f32);
             gl::Uniform4f(self.u_rect, x, y, w, h);
             gl::Uniform4f(self.u_uv, src[0], src[1], src[2], src[3]);
             gl::Uniform1f(self.u_bright, bright);
@@ -223,9 +263,9 @@ impl GamePass {
     }
 }
 
-fn whole_scale_source(src: [f32; 4], fbo: [f32; 2]) -> [f32; 4] {
-    let (x, w) = whole_scale(src[0], src[2], SRC_W as f32, OUT_W as f32 * fbo[0]);
-    let (y, h) = whole_scale(src[1], src[3], SRC_H as f32, OUT_H as f32 * fbo[1]);
+fn whole_scale_source(src: [f32; 4], fbo: [f32; 2], texels: (u32, u32)) -> [f32; 4] {
+    let (x, w) = whole_scale(src[0], src[2], texels.0 as f32, OUT_W as f32 * fbo[0]);
+    let (y, h) = whole_scale(src[1], src[3], texels.1 as f32, OUT_H as f32 * fbo[1]);
     [x, y, w, h]
 }
 

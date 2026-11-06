@@ -3,6 +3,8 @@ use std::sync::OnceLock;
 use fontdue::{Font, FontSettings};
 
 const LABEL_TTF: &[u8] = include_bytes!("../assets/label.ttf");
+/// Permanent Marker (Apache 2.0, `PermanentMarker-LICENSE.txt`): the hand that writes folder names.
+const MARKER_TTF: &[u8] = include_bytes!("../assets/PermanentMarker-Regular.ttf");
 
 pub struct Layout {
     pub lines: Vec<String>,
@@ -13,6 +15,12 @@ pub struct Layout {
 pub fn label_font() -> Option<&'static Font> {
     static FONT: OnceLock<Option<Font>> = OnceLock::new();
     FONT.get_or_init(|| Font::from_bytes(LABEL_TTF, FontSettings::default()).ok())
+        .as_ref()
+}
+
+pub fn marker_font() -> Option<&'static Font> {
+    static FONT: OnceLock<Option<Font>> = OnceLock::new();
+    FONT.get_or_init(|| Font::from_bytes(MARKER_TTF, FontSettings::default()).ok())
         .as_ref()
 }
 
@@ -76,8 +84,14 @@ pub fn draw_centred(dst: &mut [u8], dst_w: u32, dst_h: u32, layout: &Layout, col
 }
 
 pub fn coverage(dst_w: u32, dst_h: u32, layout: &Layout) -> Vec<u8> {
+    match label_font() {
+        Some(font) => coverage_in(font, dst_w, dst_h, layout),
+        None => vec![0u8; (dst_w * dst_h) as usize],
+    }
+}
+
+pub fn coverage_in(font: &Font, dst_w: u32, dst_h: u32, layout: &Layout) -> Vec<u8> {
     let mut out = vec![0u8; (dst_w * dst_h) as usize];
-    let Some(font) = label_font() else { return out };
     let Some(vm) = font.horizontal_line_metrics(layout.px) else {
         return out;
     };

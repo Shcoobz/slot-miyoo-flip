@@ -81,6 +81,7 @@ enum Cmd {
     BeginCable(u8, Box<dyn LinkChannel>),
     SetOption(String, String),
     Refresh,
+    SetCheats(Vec<(u32, String)>),
 }
 
 struct Shared {
@@ -258,6 +259,12 @@ impl EmuHandle {
             &self.shared,
             Cmd::SetOption(key.to_owned(), value.to_owned()),
         );
+    }
+
+    /// The cheats that are on, as `(index, code)`; the whole set replaces what the core had.
+    /// Sent before the game has loaded, it waits in the queue until it has.
+    pub fn set_cheats(&self, cheats: Vec<(u32, String)>) {
+        request(&self.cmds, &self.shared, Cmd::SetCheats(cheats));
     }
 
     pub fn set_driven(&self, driven: bool) {
@@ -655,7 +662,7 @@ impl Worker {
                     }
                     core.set_frame_skip(false);
                     core.run_frame(ButtonMask(0));
-                    self.publish(core.video_xrgb8888());
+                    self.publish(core.video_xrgb8888(), core.video_size());
                 }
                 self.shared
                     .rewind_fill
@@ -773,7 +780,7 @@ impl Worker {
                     }
                 }
                 flush_outbound(&mut transport, &link);
-                self.publish(core.video_xrgb8888());
+                self.publish(core.video_xrgb8888(), core.video_size());
                 self.frame_done(served);
 
                 since_snapshot += 1;
@@ -898,7 +905,7 @@ impl Worker {
                     core.run_frame(ButtonMask(0));
                     core.set_frame_skip(false);
                     core.run_frame(ButtonMask(0));
-                    self.publish(core.video_xrgb8888());
+                    self.publish(core.video_xrgb8888(), core.video_size());
                     let _ = core.take_audio();
                     if let Err(e) = core.unserialize(&state) {
                         eprintln!("slot: refresh: {e}");
@@ -910,7 +917,8 @@ impl Worker {
                 let _ = reply.send(core.save_ram());
             }
             Cmd::Thumb(reply) => {
-                let _ = reply.send(crate::thumb::png(core.video_xrgb8888()));
+                let (w, h) = core.video_size();
+                let _ = reply.send(crate::thumb::png_sized(core.video_xrgb8888(), w, h));
             }
             Cmd::BeginLink(client_id, t) => {
                 self.shared.link_lost.store(false, Ordering::Relaxed);
@@ -945,6 +953,7 @@ impl Worker {
             Cmd::SetOption(key, value) => {
                 core.set_option(&key, &value);
             }
+            Cmd::SetCheats(cheats) => core.set_cheats(&cheats),
             Cmd::EndLink => {
                 self.shared.link_lost.store(false, Ordering::Relaxed);
                 self.shared.peer_ended.store(false, Ordering::Relaxed);
@@ -1001,11 +1010,13 @@ impl Worker {
         }
     }
 
-    fn publish(&self, video: &[u8]) {
+    /// Hands the frame to the renderer with its size: 240x160 for GBA and Game Boy, the core's
+    /// own (and changing) size for NES and SNES.
+    fn publish(&self, video: &[u8], size: (u32, u32)) {
         let mut buf = self.frames.take_write();
         buf.clear();
         buf.extend_from_slice(video);
-        self.frames.publish(buf);
+        self.frames.publish_sized(buf, size);
         self.shared.published.fetch_add(1, Ordering::Relaxed);
         crate::latency::published();
     }

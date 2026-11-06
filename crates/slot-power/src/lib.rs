@@ -5,15 +5,22 @@ macro_rules! eprintln {
     }};
 }
 
+mod cpu;
 mod device;
+mod mixer;
 mod motor;
 mod power;
 mod sim;
 
+pub use cpu::{cpu_step, CpuCap};
 pub use device::{
     card_kernel_lines, card_mount_in, has_bit, motor_change, read_only, read_only_in,
-    record_first_frame, rumble_node, stage_repair, take_repair_result, trace_first_frame,
-    uptime_seconds, CardMount, DevicePlatform,
+    record_first_frame, rumble_node, stage_repair, status_led, take_repair_result,
+    trace_first_frame, uptime_seconds, CardMount, DevicePlatform,
+};
+pub use mixer::{
+    assist_volume, control_level, find_control, parse_cget, volume_db, ControlRange, Mixer,
+    HEADPHONE_CONTROLS, SPEAKER_CONTROLS, VOLUME_FLOOR_DB,
 };
 pub use motor::Motor;
 pub use power::Power;
@@ -69,6 +76,40 @@ pub trait Platform: Send {
     }
 
     fn headphones(&self) -> bool {
+        false
+    }
+
+    /// A computer has set up the device's USB connection (adb, a copy over the cable); a plain
+    /// charger never does.
+    fn on_a_computer(&self) -> bool {
+        false
+    }
+
+    /// Sends the sound to the headphones or the speaker where the codec does not on its own.
+    fn route_audio(&mut self, _headphones: bool) {}
+
+    /// Sets the output's volume `0..=100` on the codec itself where it has a control for it, 0
+    /// switching the amplifier off. Returns at once; the last of quick changes wins.
+    fn set_volume(&mut self, _volume: u8, _headphones: bool) {}
+
+    /// What the picture is multiplied by at brightness `step`, for a step darker than the
+    /// backlight goes: 1 where the backlight reaches it.
+    fn picture_dim(&self, _step: u8) -> f32 {
+        1.0
+    }
+
+    /// True while the codec carries the volume, so the samples go out at full scale.
+    fn hardware_volume(&self) -> bool {
+        false
+    }
+
+    /// Caps the CPU's top clock at `khz`, or the nearest step under it, where slot may; the
+    /// governor still picks the clock under the cap.
+    fn cap_cpu(&mut self, _khz: u32) {}
+
+    /// Suspends to RAM until the lid opens or the power key is pressed, or `wake_after` passes.
+    /// Returns once awake again; false when this device cannot suspend, without having tried.
+    fn suspend(&mut self, _wake_after: Option<Duration>) -> bool {
         false
     }
 

@@ -157,3 +157,80 @@ fn the_same_stem_on_two_platforms_is_two_carts_with_two_labels() {
         "the GBA cart borrowed the Game Boy label"
     );
 }
+
+#[test]
+fn a_folder_one_level_down_is_scanned_and_its_games_know_it() {
+    let d = tmp_root();
+    write_rom(&d, "GBA/Advance Wars.gba", "ADVANCEWARS");
+    std::fs::create_dir_all(d.path().join("Games/GBA/RPGs/Deeper")).unwrap();
+    write_rom(&d, "GBA/RPGs/Golden Sun.gba", "GOLDEN SUN");
+    write_rom(&d, "GBA/RPGs/Deeper/Hidden.gba", "HIDDEN");
+    write_png(&d, "GBA/Golden Sun.png");
+    let carts = scan(d.path()).unwrap();
+    let stems: Vec<_> = carts
+        .iter()
+        .map(|c| (c.stem.as_str(), c.folder()))
+        .collect();
+    assert_eq!(
+        stems,
+        [("Advance Wars", None), ("Golden Sun", Some("RPGs"))],
+        "only one level of folders is read"
+    );
+    assert!(
+        carts[1].label.is_some(),
+        "a game in a folder keeps its label in the flat Labels/GBA"
+    );
+    assert_eq!(carts[1].platform, Platform::Gba);
+}
+
+#[test]
+fn nes_and_snes_folders_shelve_their_own_roms_and_no_others() {
+    let d = tmp_root();
+    for dir in ["Games/NES", "Games/SNES", "Games/SNES/RPGs"] {
+        std::fs::create_dir_all(d.path().join(dir)).unwrap();
+    }
+    for rel in [
+        "NES/Zelda.nes",
+        "NES/Wrong.sfc",
+        "SNES/Super Metroid.sfc",
+        "SNES/Earthbound.SMC",
+        "SNES/Wrong.nes",
+        "SNES/RPGs/Chrono Trigger.smc",
+    ] {
+        std::fs::write(d.path().join("Games").join(rel), vec![0u8; 0x200]).unwrap();
+    }
+    write_png(&d, "SNES/Super Metroid.png");
+
+    let carts = scan(d.path()).unwrap();
+
+    let found: Vec<_> = carts
+        .iter()
+        .map(|c| (c.platform, c.stem.as_str(), c.folder()))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (Platform::Nes, "Zelda", None),
+            (Platform::Snes, "Chrono Trigger", Some("RPGs")),
+            (Platform::Snes, "Earthbound", None),
+            (Platform::Snes, "Super Metroid", None),
+        ]
+    );
+    let metroid = carts.iter().find(|c| c.stem == "Super Metroid").unwrap();
+    assert!(
+        metroid.label.is_some(),
+        "the label in Labels/SNES was not found"
+    );
+}
+
+#[test]
+fn a_nes_or_snes_cart_goes_by_its_file_name_not_a_game_boy_header() {
+    let d = tmp_root();
+    std::fs::create_dir_all(d.path().join("Games/NES")).unwrap();
+    let mut rom = vec![0u8; 0x200];
+    rom[0x134..0x13f].copy_from_slice(b"NOT A TITLE");
+    std::fs::write(d.path().join("Games/NES/Kirby.nes"), rom).unwrap();
+    let mut cart = scan(d.path()).unwrap().remove(0);
+    cart.read_header();
+    assert!(cart.title.is_empty());
+}

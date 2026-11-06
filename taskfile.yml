@@ -5,6 +5,11 @@ vars:
   GPSP_HOST: vendor/gpsp_libretro.dylib
   MGBA_COMMIT: e31759b24e7a4e3899285ff720d7b573ac328ae7
   GPSP_COMMIT: 7b2dd37394e2822110cacef321e9bb291a305b77
+  GAMBATTE_COMMIT: d9d6cd06382d1ced30de34d56d3609452323dab1
+  FCEUMM_COMMIT: ac0d00a7fc01166f84c7bac01d1084ebfd2b865e
+  NESTOPIA_COMMIT: 06a8949e0b3cf60e3a38a374b1426bf40fccb9a0
+  SNES9X_COMMIT: 1bcc369e89f08243e0a462882fb1f3e42e51de3a
+  SNES9X2005_COMMIT: a79dfe9047e7fec58808aefe48ad2bf499c7af11
   EXFATPROGS_VERSION: 1.4.3
   EXFATPROGS_SHA256: 4b5052cba6ff9f6dcb1c63eeeac328620472c5b0b3caf3d38e4ada50e75469d3
   SLOT_IN_PROCESS: >-
@@ -264,6 +269,121 @@ tasks:
       - cp vendor/gpsp_libretro.so.meta vendor/gpsp-src.meta
       - 'echo "built vendor/gpsp_libretro.so from vendor/gpsp-src.tar.gz @ {{.GPSP_COMMIT}}"'
 
+  core:gambatte:
+    desc: >-
+      Build the aarch64 linux Gambatte core (Game Boy / Color on the Miyoo Flip) from its pinned
+      source archive, which ships beside it as its GPL-2.0 corresponding source
+    status:
+      - test -f vendor/gambatte_libretro.so
+      - test -f vendor/gambatte-src.tar.gz
+      - test "$(cat vendor/gambatte_libretro.so.meta 2>/dev/null)" = "$(sh cores/gambatte/build.sh stamp {{.GAMBATTE_COMMIT}})"
+    cmds:
+      - |
+        set -euo pipefail
+        mkdir -p vendor
+        rm -f vendor/gambatte_libretro.so vendor/gambatte_libretro.so.meta vendor/gambatte-src.tar.gz
+        curl -fsSL -o vendor/gambatte-src.tar.gz \
+          "https://github.com/libretro/gambatte-libretro/archive/{{.GAMBATTE_COMMIT}}.tar.gz"
+      - task: device:sh
+        vars:
+          CMD: >-
+            sh cores/gambatte/build.sh build {{.GAMBATTE_COMMIT}} vendor/gambatte-src.tar.gz
+            target-device/gambatte vendor/gambatte_libretro.so
+      - file vendor/gambatte_libretro.so | grep -q aarch64
+      - 'echo "built vendor/gambatte_libretro.so from vendor/gambatte-src.tar.gz @ {{.GAMBATTE_COMMIT}}"'
+
+  core:fceumm:
+    desc: >-
+      Build the aarch64 linux FCEUmm core (NES on the Miyoo Flip) from its pinned source archive,
+      which ships beside it as its GPL-2.0 corresponding source
+    status:
+      - test -f vendor/fceumm_libretro.so
+      - test -f vendor/fceumm-src.tar.gz
+      - test "$(cat vendor/fceumm_libretro.so.meta 2>/dev/null)" = "$(sh cores/fceumm/build.sh stamp {{.FCEUMM_COMMIT}})"
+    cmds:
+      - |
+        set -euo pipefail
+        mkdir -p vendor
+        rm -f vendor/fceumm_libretro.so vendor/fceumm_libretro.so.meta vendor/fceumm-src.tar.gz
+        curl -fsSL -o vendor/fceumm-src.tar.gz \
+          "https://github.com/libretro/libretro-fceumm/archive/{{.FCEUMM_COMMIT}}.tar.gz"
+      - task: device:sh
+        vars:
+          CMD: >-
+            sh cores/fceumm/build.sh build {{.FCEUMM_COMMIT}} vendor/fceumm-src.tar.gz
+            target-device/fceumm vendor/fceumm_libretro.so
+      - file vendor/fceumm_libretro.so | grep -q aarch64
+      - 'echo "built vendor/fceumm_libretro.so from vendor/fceumm-src.tar.gz @ {{.FCEUMM_COMMIT}}"'
+
+  core:nestopia:
+    desc: >-
+      Build the aarch64 linux Nestopia core (the alternative NES core on the Miyoo Flip) from its
+      pinned source archive, which ships beside it as its GPL-2.0 corresponding source
+    status:
+      - test -f vendor/nestopia_libretro.so
+      - test -f vendor/nestopia-src.tar.gz
+      - test "$(cat vendor/nestopia_libretro.so.meta 2>/dev/null)" = "$(sh cores/nestopia/build.sh stamp {{.NESTOPIA_COMMIT}})"
+    cmds:
+      - |
+        set -euo pipefail
+        mkdir -p vendor
+        rm -f vendor/nestopia_libretro.so vendor/nestopia_libretro.so.meta vendor/nestopia-src.tar.gz
+        curl -fsSL -o vendor/nestopia-src.tar.gz \
+          "https://github.com/libretro/nestopia/archive/{{.NESTOPIA_COMMIT}}.tar.gz"
+      - task: device:sh
+        vars:
+          CMD: >-
+            sh cores/nestopia/build.sh build {{.NESTOPIA_COMMIT}} vendor/nestopia-src.tar.gz
+            target-device/nestopia vendor/nestopia_libretro.so
+      - file vendor/nestopia_libretro.so | grep -q aarch64
+      - 'echo "built vendor/nestopia_libretro.so from vendor/nestopia-src.tar.gz @ {{.NESTOPIA_COMMIT}}"'
+
+  core:snes9x:
+    desc: >-
+      Build the aarch64 linux Snes9x core (SNES on the Miyoo Flip) from its pinned source archive,
+      which ships beside it as its source
+    status:
+      - test -f vendor/snes9x_libretro.so
+      - test -f vendor/snes9x-src.tar.gz
+      - test "$(cat vendor/snes9x_libretro.so.meta 2>/dev/null)" = "$(sh cores/snes9x/build.sh stamp {{.SNES9X_COMMIT}})"
+    cmds:
+      - |
+        set -euo pipefail
+        mkdir -p vendor
+        rm -f vendor/snes9x_libretro.so vendor/snes9x_libretro.so.meta vendor/snes9x-src.tar.gz
+        curl -fsSL -o vendor/snes9x-src.tar.gz \
+          "https://github.com/snes9xgit/snes9x/archive/{{.SNES9X_COMMIT}}.tar.gz"
+      - task: device:sh
+        vars:
+          CMD: >-
+            sh cores/snes9x/build.sh build {{.SNES9X_COMMIT}} vendor/snes9x-src.tar.gz
+            target-device/snes9x vendor/snes9x_libretro.so
+      - file vendor/snes9x_libretro.so | grep -q aarch64
+      - 'echo "built vendor/snes9x_libretro.so from vendor/snes9x-src.tar.gz @ {{.SNES9X_COMMIT}}"'
+
+  core:snes9x2005:
+    desc: >-
+      Build the aarch64 linux Snes9x 2005 Plus core (the lighter SNES core on the Miyoo Flip) from
+      its pinned source archive, which ships beside it as its source
+    status:
+      - test -f vendor/snes9x2005_plus_libretro.so
+      - test -f vendor/snes9x2005-src.tar.gz
+      - test "$(cat vendor/snes9x2005_plus_libretro.so.meta 2>/dev/null)" = "$(sh cores/snes9x2005/build.sh stamp {{.SNES9X2005_COMMIT}})"
+    cmds:
+      - |
+        set -euo pipefail
+        mkdir -p vendor
+        rm -f vendor/snes9x2005_plus_libretro.so vendor/snes9x2005_plus_libretro.so.meta vendor/snes9x2005-src.tar.gz
+        curl -fsSL -o vendor/snes9x2005-src.tar.gz \
+          "https://github.com/libretro/snes9x2005/archive/{{.SNES9X2005_COMMIT}}.tar.gz"
+      - task: device:sh
+        vars:
+          CMD: >-
+            sh cores/snes9x2005/build.sh build {{.SNES9X2005_COMMIT}} vendor/snes9x2005-src.tar.gz
+            target-device/snes9x2005 vendor/snes9x2005_plus_libretro.so
+      - file vendor/snes9x2005_plus_libretro.so | grep -q aarch64
+      - 'echo "built vendor/snes9x2005_plus_libretro.so from vendor/snes9x2005-src.tar.gz @ {{.SNES9X2005_COMMIT}}"'
+
   core:gpsp:update:
     desc: Refetch gpSP's source archive and rebuild the core from it, even if the set is current
     cmds:
@@ -345,11 +465,14 @@ tasks:
     deps: [core:device, core:gpsp, fsck:exfat, build:device]
     vars:
       OUT: '{{.OUT | default "dist-device"}}'
+      # The device box may run as root (docker on Linux); the tree it makes is handed back.
+      OWNER:
+        sh: echo "$(id -u):$(id -g)"
     cmds:
       - rm -rf {{.OUT}}
       - task: device:sh
         vars:
-          CMD: ./target-device/device/slot --init-root {{.OUT}}
+          CMD: ./target-device/device/slot --init-root {{.OUT}} && chown -R {{.OWNER}} {{.OUT}}
       - cp target-device/device/slot {{.OUT}}/System/slot
       - cp -R card/System/* {{.OUT}}/System/
       - for d in Bezels Labels Wallpapers; do cp card/$d/README.txt {{.OUT}}/$d/; done
@@ -376,6 +499,51 @@ tasks:
           cp "$p" "{{.OUT}}/System/licenses/mgba-$(basename "$p")"
         done
       - 'echo "device tree ready at {{.OUT}}, copy its contents to SD2"'
+
+  dist:flip:
+    desc: >-
+      Build the SLOT card tree for a Miyoo Flip running baseos-my355, OUT defaults to ./dist-flip:
+      dist:device's tree plus Gambatte, the NES and SNES cores and the .tmp_update/updater BaseOS
+      starts slot through
+    deps: [core:gambatte, core:fceumm, core:nestopia, core:snes9x, core:snes9x2005]
+    vars:
+      OUT: '{{.OUT | default "dist-flip"}}'
+    cmds:
+      - task: dist:device
+        vars: {OUT: '{{.OUT}}'}
+      - cp vendor/gambatte_libretro.so {{.OUT}}/System/
+      - |
+        set -euo pipefail
+        for so in fceumm nestopia snes9x snes9x2005_plus; do
+          file "vendor/${so}_libretro.so" | grep -q aarch64
+          cp "vendor/${so}_libretro.so" {{.OUT}}/System/
+        done
+      - mkdir -p {{.OUT}}/.tmp_update {{.OUT}}/Config/userdata
+      - cp card/.tmp_update/updater {{.OUT}}/.tmp_update/updater
+      - chmod +x {{.OUT}}/.tmp_update/updater
+      - cp card/README-FLIP.txt {{.OUT}}/README-FLIP.txt
+      - |
+        set -euo pipefail
+        commit="$(grep '^commit=' vendor/gambatte_libretro.so.meta | cut -d= -f2)"
+        cp vendor/gambatte-src.tar.gz "{{.OUT}}/System/licenses/gambatte-${commit}.tar.gz"
+        cp vendor/gambatte_libretro.so.meta "{{.OUT}}/System/licenses/gambatte-${commit}.meta"
+      - |
+        set -euo pipefail
+        for pair in fceumm:fceumm nestopia:nestopia snes9x:snes9x snes9x2005:snes9x2005_plus; do
+          name="${pair%%:*}" so="${pair#*:}"
+          commit="$(grep '^commit=' "vendor/${so}_libretro.so.meta" | cut -d= -f2)"
+          cp "vendor/${name}-src.tar.gz" "{{.OUT}}/System/licenses/${name}-${commit}.tar.gz"
+          cp "vendor/${so}_libretro.so.meta" "{{.OUT}}/System/licenses/${name}-${commit}.meta"
+        done
+      - 'echo "Flip card tree ready at {{.OUT}}, copy its contents to the root of the SLOT card"'
+
+  flip-card:
+    desc: >-
+      Build the Flip card tree into ./flip-card, the folder committed to the repo so people can
+      copy it to their card without building
+    cmds:
+      - task: dist:flip
+        vars: {OUT: flip-card}
 
   deploy:device:
     desc: Build and push onto a device over adb, then restart it. SD defaults to /mnt/sdcard

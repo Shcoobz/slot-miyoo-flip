@@ -397,3 +397,141 @@ fn only_the_skus_nextui_lists_with_a_left_stick_have_one() {
         assert!(!has_left_stick(t), "{t}");
     }
 }
+
+#[test]
+fn the_miyoo_pad_maps_by_the_codes_the_flip_sends() {
+    use slot::input::evdev::{to_raw_for, Ev, Layout};
+    let expected = [
+        (0x131, Btn::A),
+        (0x130, Btn::B),
+        (0x134, Btn::X),
+        (0x133, Btn::Y),
+        (0x136, Btn::L1),
+        (0x137, Btn::R1),
+        (0x13a, Btn::Select),
+        (0x13b, Btn::Start),
+        (0x13c, Btn::Menu),
+        (0x13d, Btn::L3),
+        (0x13e, Btn::R3),
+    ];
+    for (code, want) in expected {
+        let ev = Ev {
+            kind: EV_KEY,
+            code,
+            value: 1,
+        };
+        assert_eq!(
+            to_raw_for(ev, Layout::MiyooPad),
+            Some(RawEvent::Down(want)),
+            "code {code:#x}"
+        );
+    }
+}
+
+#[test]
+fn the_flip_lid_device_is_not_opened_so_shutting_it_is_no_power_press() {
+    use slot::input::evdev::Layout;
+    assert_eq!(Layout::of("hall wake key"), None);
+    assert_eq!(Layout::of("MIYOO Player1"), Some(Layout::MiyooPad));
+    assert_eq!(Layout::of("rk805 pwrkey"), Some(Layout::Anbernic));
+}
+
+#[test]
+fn the_miyoo_triggers_press_l2_and_r2_from_their_axes() {
+    use slot::input::evdev::{Hat, Layout};
+    let mut hat = Hat::for_layout(Layout::MiyooPad);
+    let ev = |code, value| slot::input::evdev::Ev {
+        kind: slot::input::evdev::EV_ABS,
+        code,
+        value,
+    };
+    assert_eq!(hat.feed(ev(0x02, 255)), vec![RawEvent::Down(Btn::L2)]);
+    assert!(hat.feed(ev(0x02, 255)).is_empty());
+    assert_eq!(hat.feed(ev(0x02, 0)), vec![RawEvent::Up(Btn::L2)]);
+    assert_eq!(hat.feed(ev(0x05, 255)), vec![RawEvent::Down(Btn::R2)]);
+    assert_eq!(hat.feed(ev(0x05, 0)), vec![RawEvent::Up(Btn::R2)]);
+}
+
+#[test]
+fn the_miyoo_left_stick_steers_from_abs_x_and_y() {
+    use slot::input::evdev::{Hat, Layout};
+    let mut hat = Hat::for_layout(Layout::MiyooPad);
+    hat.steer_with_stick(true);
+    let ev = |code, value| slot::input::evdev::Ev {
+        kind: slot::input::evdev::EV_ABS,
+        code,
+        value,
+    };
+    assert_eq!(hat.feed(ev(0x00, -30000)), vec![RawEvent::Down(Btn::Left)]);
+    assert_eq!(hat.feed(ev(0x00, 0)), vec![RawEvent::Up(Btn::Left)]);
+    assert_eq!(hat.feed(ev(0x01, 30000)), vec![RawEvent::Down(Btn::Down)]);
+    assert_eq!(hat.feed(ev(0x01, 0)), vec![RawEvent::Up(Btn::Down)]);
+    assert!(hat.feed(ev(0x04, -30000)).is_empty());
+}
+
+#[test]
+fn a_miyoo_stick_resting_off_centre_presses_nothing() {
+    use slot::input::evdev::{Hat, Layout};
+    let mut hat = Hat::for_layout(Layout::MiyooPad);
+    hat.steer_with_stick(true);
+    let ev = |code, value| slot::input::evdev::Ev {
+        kind: slot::input::evdev::EV_ABS,
+        code,
+        value,
+    };
+    for rest in [3276, 4212, 8892, 9828, -2184, -9464] {
+        assert!(hat.feed(ev(0x01, rest)).is_empty(), "rest {rest}");
+    }
+    assert_eq!(hat.feed(ev(0x11, 1)), vec![RawEvent::Down(Btn::Down)]);
+    hat.feed(ev(0x01, 9828));
+    assert_eq!(hat.feed(ev(0x11, 0)), vec![RawEvent::Up(Btn::Down)]);
+}
+
+#[test]
+fn the_miyoo_right_stick_turns_the_gyroscope_not_the_d_pad() {
+    use slot::input::evdev::{Hat, Layout};
+    let mut hat = Hat::for_layout(Layout::MiyooPad);
+    hat.steer_with_stick(true);
+    let ev = |code, value| slot::input::evdev::Ev {
+        kind: slot::input::evdev::EV_ABS,
+        code,
+        value,
+    };
+    assert!(hat.feed(ev(0x03, -32767)).is_empty());
+    let full = slot_retro::FULL_TILT_DEG.to_radians();
+    assert!((slot_retro::stick_tilt(-32767) + full).abs() < 1e-3);
+    assert_eq!(slot_retro::stick_tilt(slot_retro::GYRO_DEADZONE), 0.0);
+    assert_eq!(
+        slot_retro::stick_tilt(5616),
+        0.0,
+        "a resting stick does not tilt"
+    );
+    assert!((slot_retro::stick_rate(32767) - slot_retro::FULL_RATE_DPS.to_radians()).abs() < 1e-3);
+    assert_eq!(
+        slot_retro::stick_rate(5616),
+        0.0,
+        "a resting stick does not turn"
+    );
+}
+
+#[test]
+fn the_gyroscope_turns_towards_the_sticks_angle_and_stops_there() {
+    let mut angle = 0.0;
+    let first = slot_retro::turn_towards(&mut angle, 1.0, 1.0 / 60.0);
+    assert!(first > 0.0, "turns towards a tilted stick");
+    for _ in 0..120 {
+        slot_retro::turn_towards(&mut angle, 1.0, 1.0 / 60.0);
+    }
+    assert!(
+        (angle - 1.0).abs() < 0.01,
+        "settles at the stick's angle, got {angle}"
+    );
+    assert!(
+        slot_retro::turn_towards(&mut angle, 1.0, 1.0 / 60.0).abs() < 0.1,
+        "then stops turning"
+    );
+    assert!(
+        slot_retro::turn_towards(&mut angle, 0.0, 1.0 / 60.0) < 0.0,
+        "and turns back when let go"
+    );
+}

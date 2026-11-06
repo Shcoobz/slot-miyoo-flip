@@ -17,6 +17,20 @@ pub struct Cart {
 }
 
 impl Cart {
+    /// The folder the game sits in under `Games/<system>/`, if it is not loose in that folder.
+    pub fn folder(&self) -> Option<&str> {
+        let dir = self.rom.parent()?;
+        let system = dir.parent()?;
+        let games = system.parent()?.file_name()?;
+        let in_system = Platform::ALL
+            .iter()
+            .any(|p| system.file_name() == Some(std::ffi::OsStr::new(p.dir_name())));
+        match games == "Games" && in_system {
+            true => dir.file_name()?.to_str(),
+            false => None,
+        }
+    }
+
     pub fn read_header(&mut self) {
         match self.platform {
             Platform::Gba => {
@@ -25,11 +39,14 @@ impl Cart {
                     self.code = code;
                 }
             }
-            _ => {
+            Platform::Gb | Platform::Gbc => {
                 if let Some(title) = crate::gb::title(&self.rom) {
                     self.title = title;
                 }
             }
+            // An iNES file has no title, and a SNES header's sits at a place that depends on its
+            // mapping: these carts go by their file names.
+            Platform::Nes | Platform::Snes => {}
         }
     }
 }
@@ -74,10 +91,22 @@ pub fn scan(root: &Path) -> Result<Vec<Cart>, StoreError> {
         };
         let labels_dir = root.join("Labels").join(platform.dir_name());
         let labels = listing(&labels_dir);
-        for entry in entries {
-            let Ok(entry) = entry else {
+        // One level of folders: `Games/GBA/Pokemon Hacks/*.gba` shows as a folder on the shelf.
+        let mut found: Vec<std::fs::DirEntry> = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if is_hidden(&path) {
                 continue;
-            };
+            }
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                if let Ok(inner) = std::fs::read_dir(&path) {
+                    found.extend(inner.flatten());
+                }
+            } else {
+                found.push(entry);
+            }
+        }
+        for entry in found {
             let rom = entry.path();
             if is_hidden(&rom) || !platform.accepts(&rom) || !is_file(&entry) {
                 continue;

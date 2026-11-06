@@ -80,7 +80,7 @@ impl Session {
             return;
         }
         let mut samples = sfx.render(rate);
-        crate::audio::volume::apply(&mut samples, self.app.output_volume());
+        crate::audio::volume::apply(&mut samples, self.app.sample_volume());
         ring.mix(&samples);
     }
 
@@ -226,14 +226,19 @@ impl Session {
         for btn in self.app.taken_buttons() {
             self.pad.apply(Action::GbaUp(btn));
         }
+        let mut held = false;
         if let Some(emu) = &self.emu {
-            let mask = self.pad.mask(&self.app.controls());
+            let mask = self
+                .pad
+                .mask(&self.app.controls(), self.app.playing_platform());
             if trace() && mask.0 != self.sent {
                 eprintln!("slot: pad {:#06x}", mask.0);
             }
             self.sent = mask.0;
+            held = mask.0 != 0;
             emu.set_input(mask);
         }
+        self.app.set_buttons_held(held);
     }
 
     fn bridge_link(&mut self, f: impl FnOnce(&mut App)) {
@@ -265,7 +270,7 @@ impl Session {
             Action::VolumeUp | Action::VolumeDown | Action::MuteToggle
         ) {
             if let Some(emu) = &self.emu {
-                emu.set_volume(self.app.output_volume());
+                emu.set_volume(self.app.sample_volume());
             }
         }
         if menu || self.overlaid() {
@@ -283,7 +288,7 @@ impl Session {
     pub fn update(&mut self, dt: f32) {
         self.bridge_link(|app| app.update(dt));
         if let Some(emu) = &self.emu {
-            emu.set_volume(self.app.output_volume());
+            emu.set_volume(self.app.sample_volume());
         }
         if let Some((client_id, transport)) = self.app.take_link_transport() {
             match &self.emu {
@@ -297,8 +302,20 @@ impl Session {
         let mut recoloured = false;
         if let Some(p) = self.app.take_gb_colors() {
             if let Some(emu) = &self.emu {
-                emu.set_option("mgba_gb_colors", p.core_name());
-                recoloured = true;
+                match self.app.core() {
+                    slot_store::Core::Gambatte => {
+                        for (key, value) in crate::core::gambatte_colour_options(Some(p)) {
+                            emu.set_option(key, &value);
+                        }
+                        recoloured = true;
+                    }
+                    slot_store::Core::Mgba => {
+                        emu.set_option("mgba_gb_colors", p.core_name());
+                        recoloured = true;
+                    }
+                    // The NES and SNES cores have no Game Boy palettes.
+                    _ => {}
+                }
             }
         }
         if let Some(on) = self.app.take_colour_correction() {
@@ -309,6 +326,11 @@ impl Session {
                     emu.set_option(key, value);
                     recoloured = true;
                 }
+            }
+        }
+        if let Some(cheats) = self.app.take_cheats() {
+            if let Some(emu) = &self.emu {
+                emu.set_cheats(cheats);
             }
         }
         if recoloured && self.held() && !self.app.link_active() {
@@ -506,20 +528,21 @@ impl Session {
     }
 
     fn spawn_core(&mut self, stem: &str, serial: &'static str) {
-        let Some((rom, platform)) = self
-            .app
-            .seated_cart()
-            .filter(|c| c.stem == stem)
-            .map(|c| (c.rom.clone(), c.platform))
+        let Some((rom, platform, core)) =
+            self.app.seated_cart().filter(|c| c.stem == stem).map(|c| {
+                let core = slot_store::core_for_cart(&self.root, c);
+                (c.rom.clone(), c.platform, core)
+            })
         else {
             return;
         };
-        let core = slot_store::core_for_platform(&self.root, stem, platform);
         launch(&format!("opening {stem} on {}", core.as_str()));
         self.app.set_core(core);
         self.app.set_platform(platform);
         self.app
-            .set_video_mode(crate::video_mode::video_mode_for(&self.root, stem));
+            .set_video_mode(crate::video_mode::video_mode_for_platform(
+                &self.root, stem, platform,
+            ));
         self.app.set_link_loaded(serial);
         let root = self.root.clone();
         let stem = stem.to_owned();
@@ -589,8 +612,12 @@ impl Session {
             emu.refuse_resume();
         }
         self.app.set_resume_unread(resume_unread);
-        emu.set_volume(self.app.output_volume());
+        emu.set_volume(self.app.sample_volume());
         emu.set_driven(self.driven);
+        let cheats = self.app.load_cheats();
+        if !cheats.is_empty() {
+            emu.set_cheats(cheats);
+        }
         self.app.set_snapshot(Box::new(emu.snapshot()));
         self.emu = Some(emu);
         true

@@ -6,8 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = ["host"]
+default = ["host", "link"]
 host = ["dep:winit", "dep:cpal", "dep:gilrs", "slot-gfx/host"]
+# Link play (cable/wireless GBA link). Off on the Flip: its build uses --no-default-features.
+link = []
 device = ["slot-gfx/device"]
 
 [dependencies]

@@ -3,6 +3,8 @@ set -u
 
 SD="${SLOT_ROOT:-/mnt/sdcard}"
 PSY="${AGS_PSY:-/sys/class/power_supply/axp2202-battery}"
+# The Miyoo Flip has no power-supply hallkey; its lid sensor reads 0 when closed too.
+HALL="${AGS_HALL:-/sys/devices/platform/hall-mh248/hallvalue}"
 SLOT_STATE="${AGS_SLOT_STATE:-$SD/Config/slot.state}"
 TRACE="${AGS_TRACE:-$SD/Logs/ags-shutdown-trace.log}"
 CLOSED="${AGS_LID_CLOSED:-/run/slot-lid.closed}"
@@ -45,8 +47,12 @@ power_off() {
 	$POWEROFF
 }
 
+lid() {
+	cat "$PSY/hallkey" 2>/dev/null || cat "$HALL" 2>/dev/null
+}
+
 check() {
-	if [ "$(cat "$PSY/hallkey" 2>/dev/null)" != 0 ]; then
+	if [ "$(lid)" != 0 ]; then
 		rm -f "$CLOSED"
 		return 1
 	fi

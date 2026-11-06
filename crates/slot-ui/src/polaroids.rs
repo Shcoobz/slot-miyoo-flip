@@ -19,6 +19,12 @@ const DOT_DIM: f32 = 0.35;
 const MARGIN: f32 = 16.0;
 
 pub const LEGEND: [(&str, &str); 3] = [("B", "Back"), ("Y", "Delete"), ("A", "Load")];
+pub const GAMES_LEGEND: [(&str, &str); 4] = [
+    ("B", "Back"),
+    ("Y", "Remove"),
+    ("X", "States"),
+    ("A", "Resume"),
+];
 const WAYS_OUT: usize = 2;
 const UNDO_KEY: &str = "X";
 
@@ -26,21 +32,61 @@ pub struct PhotoFace {
     pub rgba: Vec<u8>,
     pub w: u32,
     pub h: u32,
+    /// A Game Boy picture at (40, 8) in the black frame; the shelf shows only that part.
+    pub game_boy: bool,
+}
+
+/// Where a Game Boy picture sits in the GBA-sized frame a thumb is taken from.
+const GB_PICTURE: (u32, u32, u32, u32) = (40, 8, 160, 144);
+
+/// The Game Boy picture cut out of a thumb whose border around it is black, else None.
+fn game_boy_picture(src: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
+    let (x0, y0, pw, ph) = GB_PICTURE;
+    if (w, h) != (PHOTO_W, PHOTO_H) {
+        return None;
+    }
+    let dark = |x: u32, y: u32| {
+        let i = ((y * w + x) * 4) as usize;
+        src[i] as u32 + src[i + 1] as u32 + src[i + 2] as u32 <= 24
+    };
+    let sides = (0..h).all(|y| (0..x0).chain(x0 + pw..w).all(|x| dark(x, y)));
+    let caps = (x0..x0 + pw).all(|x| (0..y0).chain(y0 + ph..h).all(|y| dark(x, y)));
+    if !(sides && caps) {
+        return None;
+    }
+    let mut out = Vec::with_capacity((pw * ph * 4) as usize);
+    for y in y0..y0 + ph {
+        let at = ((y * w + x0) * 4) as usize;
+        out.extend_from_slice(&src[at..at + (pw * 4) as usize]);
+    }
+    Some(out)
+}
+
+/// The thumb as taken, its size, and whether it holds a Game Boy picture in its black border. It
+/// is never resampled here: the shelf draws the Game Boy part alone at 10:9 and a NES or SNES
+/// picture whole at 4:3, and the game screen shows it like a running game, so each picture is
+/// scaled once, pixel for pixel.
+fn photo_rgba(thumb: &std::path::Path) -> Option<(Vec<u8>, u32, u32, bool)> {
+    let (src, w, h) = art::decode(thumb)?;
+    let game_boy = game_boy_picture(&src, w, h).is_some();
+    Some((src, w, h, game_boy))
 }
 
 pub fn photo_face(entry: &StateEntry) -> PhotoFace {
-    let rgba = art::cover(&entry.thumb, PHOTO_W, PHOTO_H).unwrap_or_else(|| {
-        std::iter::repeat_n(
+    let (rgba, w, h, game_boy) = photo_rgba(&entry.thumb).unwrap_or_else(|| {
+        let blank = std::iter::repeat_n(
             [BLANK[0], BLANK[1], BLANK[2], 255],
             (PHOTO_W * PHOTO_H) as usize,
         )
         .flatten()
-        .collect()
+        .collect();
+        (blank, PHOTO_W, PHOTO_H, false)
     });
     PhotoFace {
         rgba,
-        w: PHOTO_W,
-        h: PHOTO_H,
+        w,
+        h,
+        game_boy,
     }
 }
 
@@ -48,9 +94,14 @@ pub struct Polaroids {
     pub entries: Vec<StateEntry>,
     pub index: usize,
     faces: Vec<TexId>,
+    /// Which faces hold a Game Boy picture in a GBA-sized frame.
+    game_boy: Vec<bool>,
+    /// Each face's size: a GBA frame, or a NES or SNES picture at its own.
+    sizes: Vec<(u32, u32)>,
     title: Option<TexId>,
     hint_faces: Vec<TexId>,
     undo: Option<String>,
+    legend: &'static [(&'static str, &'static str)],
 }
 
 impl Polaroids {
@@ -59,10 +110,28 @@ impl Polaroids {
             entries,
             index: 0,
             faces: Vec::new(),
+            game_boy: Vec::new(),
+            sizes: Vec::new(),
             title: None,
             hint_faces: Vec::new(),
             undo: None,
+            legend: &LEGEND,
         }
+    }
+
+    pub fn games(entries: Vec<StateEntry>) -> Self {
+        Polaroids {
+            legend: &GAMES_LEGEND,
+            ..Self::new(entries)
+        }
+    }
+
+    pub fn set_game_boy_faces(&mut self, game_boy: Vec<bool>) {
+        self.game_boy = game_boy;
+    }
+
+    pub fn set_face_sizes(&mut self, sizes: Vec<(u32, u32)>) {
+        self.sizes = sizes;
     }
 
     pub fn set_faces(&mut self, faces: Vec<TexId>) {
@@ -82,7 +151,7 @@ impl Polaroids {
     }
 
     pub fn hints(&self) -> Vec<Hint> {
-        let mut out = hint_row(&LEGEND);
+        let mut out = hint_row(self.legend);
         if let Some(label) = &self.undo {
             out.push(Hint {
                 key: UNDO_KEY,
@@ -118,6 +187,12 @@ impl Polaroids {
         self.entries.remove(self.index);
         if self.index < self.faces.len() {
             self.faces.remove(self.index);
+        }
+        if self.index < self.game_boy.len() {
+            self.game_boy.remove(self.index);
+        }
+        if self.index < self.sizes.len() {
+            self.sizes.remove(self.index);
         }
         self.index = self.index.min(self.entries.len().saturating_sub(1));
     }
@@ -159,18 +234,52 @@ impl Polaroids {
         let (w, h) = (canvas.w, canvas.h);
         out.push(match self.faces.get(self.index) {
             Some(tex) => Draw::Shot { tex: *tex },
-            None => Draw::Rect {
-                x: 0.0,
-                y: 0.0,
+            None => blank(0.0, 0.0, w, h),
+        });
+    }
+
+    /// The photo as a print between the plates, for when no game screen is up.
+    pub fn draw_print(&self, canvas: Canvas, out: &mut Vec<Draw>) {
+        let game_boy = self.game_boy.get(self.index).copied().unwrap_or(false);
+        let size = self
+            .sizes
+            .get(self.index)
+            .copied()
+            .unwrap_or((PHOTO_W, PHOTO_H));
+        let (_, _, gw, gh) = GB_PICTURE;
+        // A NES or SNES picture was drawn for a 4:3 television, whatever its pixel count.
+        let (pw, ph) = match (game_boy, size == (PHOTO_W, PHOTO_H)) {
+            (true, _) => (gw as f32, gh as f32),
+            (false, true) => (PHOTO_W as f32, PHOTO_H as f32),
+            (false, false) => (4.0, 3.0),
+        };
+        let room = canvas.h - 2.0 * PLATE_H;
+        let w = canvas.w.min(room * pw / ph);
+        let h = w * ph / pw;
+        let (x, y) = (canvas.centred(w), PLATE_H + (room - h) / 2.0);
+        out.push(match (self.faces.get(self.index), game_boy) {
+            (Some(tex), true) => {
+                let (gx, gy, _, _) = GB_PICTURE;
+                let (fw, fh) = (PHOTO_W as f32, PHOTO_H as f32);
+                Draw::Part {
+                    x,
+                    y,
+                    w,
+                    h,
+                    tex: *tex,
+                    alpha: 1.0,
+                    uv: [gx as f32 / fw, gy as f32 / fh, pw / fw, ph / fh],
+                }
+            }
+            (Some(tex), false) => Draw::Tex {
+                x,
+                y,
                 w,
                 h,
-                colour: [
-                    BLANK[0] as f32 / 255.0,
-                    BLANK[1] as f32 / 255.0,
-                    BLANK[2] as f32 / 255.0,
-                    1.0,
-                ],
+                tex: *tex,
+                alpha: 1.0,
             },
+            (None, _) => blank(x, y, w, h),
         });
     }
 
@@ -208,7 +317,7 @@ impl Polaroids {
             .map(|h| hint_width(h.key, &h.label) as f32)
             .collect();
         let tail = &widths[WAYS_OUT..];
-        let tail_w = tail.iter().sum::<f32>() + HINT_GAP * (tail.len() - 1) as f32;
+        let tail_w = tail.iter().sum::<f32>() + HINT_GAP * tail.len().saturating_sub(1) as f32;
         let mut x = MARGIN;
         for (i, w) in widths.iter().enumerate() {
             if i == WAYS_OUT {
@@ -252,6 +361,21 @@ impl Polaroids {
             return format!("{} hr ago", delta / 3600);
         }
         format!("{} {}:{}", &stamp[..10], &stamp[11..13], &stamp[14..16])
+    }
+}
+
+fn blank(x: f32, y: f32, w: f32, h: f32) -> Draw {
+    Draw::Rect {
+        x,
+        y,
+        w,
+        h,
+        colour: [
+            BLANK[0] as f32 / 255.0,
+            BLANK[1] as f32 / 255.0,
+            BLANK[2] as f32 / 255.0,
+            1.0,
+        ],
     }
 }
 

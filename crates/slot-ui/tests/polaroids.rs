@@ -229,3 +229,55 @@ fn nothing_on_the_plate_moves_when_the_charge_state_changes() {
         );
     }
 }
+
+#[test]
+fn a_game_boy_print_is_its_own_picture_at_ten_by_nine_never_resampled() {
+    let d = tempfile::tempdir().unwrap();
+    let e = entry(d.path(), "2026-10-22_10-00-00");
+    // A Game Boy frame as the core leaves it: 160x144 in black, at (40, 8) of 240x160, with a
+    // one-pixel checker so any resampling would grey it.
+    let file = std::fs::File::create(&e.thumb).unwrap();
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), PHOTO_W, PHOTO_H);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut pixels = vec![0u8; (PHOTO_W * PHOTO_H * 3) as usize];
+    for y in 8..152 {
+        for x in 40..200 {
+            let v = if (x + y) % 2 == 0 { 255 } else { 40 };
+            let at = ((y * PHOTO_W + x) * 3) as usize;
+            pixels[at..at + 3].copy_from_slice(&[v, v, v]);
+        }
+    }
+    enc.write_header()
+        .unwrap()
+        .write_image_data(&pixels)
+        .unwrap();
+
+    let face = photo_face(&e);
+    assert!(face.game_boy);
+    assert_eq!((face.w, face.h), (PHOTO_W, PHOTO_H));
+    assert_eq!(
+        pixel(&face, 40, 8),
+        [255, 255, 255],
+        "the picture was resampled"
+    );
+    assert_eq!(
+        pixel(&face, 41, 8),
+        [40, 40, 40],
+        "the picture was resampled"
+    );
+
+    let mut p = Polaroids::games(vec![e]);
+    p.set_faces(vec![TexId::from_raw(7)]);
+    p.set_game_boy_faces(vec![true]);
+    let mut out = Vec::new();
+    p.draw_print(slot_ui::Canvas::of((640, 480)), &mut out);
+    let Some(Draw::Part { w, h, uv, .. }) = out.first() else {
+        panic!("the Game Boy part was not cut out: {out:?}");
+    };
+    assert!((w / h - 160.0 / 144.0).abs() < 0.01, "not 10:9: {w}x{h}");
+    assert_eq!(
+        *uv,
+        [40.0 / 240.0, 8.0 / 160.0, 160.0 / 240.0, 144.0 / 160.0]
+    );
+}

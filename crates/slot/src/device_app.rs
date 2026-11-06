@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use slot::frontend::Frontend;
 use slot::input::DeviceInput;
 use slot::panel_turn::{panel_turn, PanelTurn};
-use slot_gfx::{Compositor, FbdevSurface, Surface};
+use slot_gfx::{Compositor, FbdevSurface, GfxError, KmsSurface, Surface};
 use slot_power::{trace_first_frame, DevicePlatform};
 
 const CARD: &str = "/mnt/sdcard";
@@ -64,6 +64,14 @@ impl Pacer {
     }
 }
 
+fn open_surface() -> Result<Box<dyn Surface>, GfxError> {
+    match KmsSurface::new() {
+        Ok(s) => return Ok(Box::new(s)),
+        Err(e) => eprintln!("slot: {e}, falling back to fbdev"),
+    }
+    Ok(Box::new(FbdevSurface::new()?))
+}
+
 pub fn run() {
     slot::boot_time::mark("start");
     let _ = std::thread::Builder::new()
@@ -75,7 +83,7 @@ pub fn run() {
     let root = std::env::var_os("SLOT_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(CARD));
-    let mut surface = match FbdevSurface::new() {
+    let mut surface = match open_surface() {
         Ok(s) => s,
         Err(e) => {
             eprintln!("slot: {e}");
@@ -83,7 +91,7 @@ pub fn run() {
         }
     };
     slot::boot_time::mark("surface");
-    let mut compositor = match Compositor::new(&surface) {
+    let mut compositor = match Compositor::new(&*surface) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("slot: {e}");
@@ -145,9 +153,17 @@ pub fn run() {
     let mut drawn = false;
     frontend.drive_emulator();
     let mut pacer = Pacer::new();
+    let paced = surface.paces_itself();
+    // Plugging a TV in or out moves the picture and the sound: save and let BaseOS start slot
+    // again on the new output.
+    let hdmi = slot::hdmi::connected();
+    let mut hdmi_at = Instant::now();
     let (mut frames, mut missed, mut early) = (0u32, 0u32, 0u32);
+    let (mut idle, mut quiet) = (0u32, 0u32);
     loop {
-        pacer.wait();
+        if !paced {
+            pacer.wait();
+        }
         let began = Instant::now();
         input.steer_with_stick(frontend.app().left_stick_dpad());
         frontend.advance(&mut input);
@@ -161,13 +177,41 @@ pub fn run() {
             frontend.poweroff();
             return;
         }
+        if hdmi_at.elapsed() >= Duration::from_millis(500) {
+            hdmi_at = Instant::now();
+            if slot::hdmi::connected() != hdmi {
+                eprintln!(
+                    "slot: hdmi {}, restarting on it",
+                    if hdmi { "unplugged" } else { "plugged in" }
+                );
+                frontend.stop();
+                return;
+            }
+        }
         if slot::crash::stopping() {
             eprintln!("slot: told to stop, saving first");
             frontend.stop();
             return;
         }
         frontend.step_emulator(pacer.period, STEP_TIMEOUT);
-        frontend.render(&mut compositor, window);
+        if !frontend.render(&mut compositor, window) {
+            // Nothing moved: the panel already shows this frame, so skip the GPU and the flip.
+            // After a second of stillness look half as often; a press still lands within 34 ms.
+            // A running game keeps the full pace however still its picture, as each turn of
+            // this loop steps it one frame and its sound must not fall behind.
+            quiet = quiet.saturating_add(1);
+            idle += 1;
+            // Dozing, nothing shows at all: a press or the lid still lands within 150 ms.
+            let still = quiet > 60 && !frontend.game_running();
+            let period = match (frontend.app().dozing(), still) {
+                (true, _) => Duration::from_millis(150),
+                (false, true) => pacer.period * 2,
+                (false, false) => pacer.period,
+            };
+            std::thread::sleep(period.saturating_sub(began.elapsed()));
+            continue;
+        }
+        quiet = 0;
         let swap = Instant::now();
         let work = swap - began;
         if let Err(e) = surface.swap() {
@@ -184,11 +228,11 @@ pub fn run() {
             early += u32::from(swap_took > pacer.period / 2);
             if frames == 600 {
                 eprintln!(
-                    "slot: pace: 600 frames, {missed} missed a latch, {early} drawn early, work {:.1} ms, period {:.2} ms",
+                    "slot: pace: 600 frames, {missed} missed a latch, {early} drawn early, {idle} skipped as still, work {:.1} ms, period {:.2} ms",
                     pacer.work.as_secs_f64() * 1e3,
                     pacer.period.as_secs_f64() * 1e3
                 );
-                (frames, missed, early) = (0, 0, 0);
+                (frames, missed, early, idle) = (0, 0, 0, 0);
             }
         }
         if !drawn {

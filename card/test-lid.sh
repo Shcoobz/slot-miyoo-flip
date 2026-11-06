@@ -7,7 +7,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
 setup() {
-	rm -rf "$TMP/psy" "$TMP/bin" "$TMP"/*.log "$TMP/closed" "$TMP/slot.state"
+	rm -rf "$TMP/psy" "$TMP/bin" "$TMP"/*.log "$TMP/closed" "$TMP/slot.state" "$TMP/hallvalue"
 	mkdir -p "$TMP/psy" "$TMP/bin"
 	for tool in rmmod sync poweroff; do
 		printf '#!/bin/sh\necho "%s $*" >> "%s"\n' "$tool" "$TMP/calls.log" > "$TMP/bin/$tool"
@@ -25,7 +25,7 @@ at() {
 }
 
 tick() {
-	AGS_PSY="$TMP/psy" AGS_SLOT_STATE="$TMP/slot.state" AGS_TRACE="$TMP/trace.log" \
+	AGS_PSY="$TMP/psy" AGS_HALL="$TMP/hallvalue" AGS_SLOT_STATE="$TMP/slot.state" AGS_TRACE="$TMP/trace.log" \
 		AGS_LID_CLOSED="$TMP/closed" AGS_UPTIME="$TMP/uptime" \
 		AGS_RMMOD="$TMP/bin/rmmod" AGS_SYNC="$TMP/bin/sync" AGS_POWEROFF="$TMP/bin/poweroff" \
 		AGS_WIFI_WAIT="${WIFI_WAIT:-5}" sh "$SCRIPT" once
@@ -114,5 +114,22 @@ off || fail "a WiFi driver that never unloads stopped the power off"
 if sh "$SCRIPT" bogus 2>/dev/null; then
 	fail "an unknown subcommand exited 0"
 fi
+
+# The Miyoo Flip has no hallkey under its battery; the lid reads from hall-mh248 instead.
+setup
+printf '0\n' > "$TMP/hallvalue"
+at 0
+tick
+at 240
+tick
+off || fail "a Flip lid closed through hallvalue did not power off"
+
+setup
+printf '1\n' > "$TMP/hallvalue"
+at 0
+tick
+at 600
+tick
+off && fail "an open Flip lid powered off"
 
 echo "lid: all passed"

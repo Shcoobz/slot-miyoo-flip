@@ -249,11 +249,12 @@ fn fast_forward_steps_through_its_speeds_wraps_at_both_ends_and_saves_each_one()
         (Btn::Left, 4),
         (Btn::Left, 3),
         (Btn::Left, 2),
-        (Btn::Left, 6),
+        (Btn::Left, 8),
         (Btn::Right, 2),
         (Btn::Right, 3),
         (Btn::Right, 4),
         (Btn::Right, 6),
+        (Btn::Right, 8),
         (Btn::Right, 2),
     ] {
         press(&mut a, btn);
@@ -713,7 +714,7 @@ fn drawn(out: &[Draw], id: usize) -> bool {
 fn the_carousel_menu_keeps_the_empty_footer_where_the_shelf_left_it() {
     let (_d, mut a, _) = on_carousel();
     fake_faces(&mut a);
-    for shelf in 0..6 {
+    for shelf in 0..8 {
         for index in 0..8 {
             a.set_cart_face(shelf, index, TexId::from_raw(79));
         }
@@ -839,7 +840,7 @@ fn the_arrows_stand_only_around_the_selected_rows_value() {
         press(&mut a, Btn::Up);
     }
     press(&mut a, Btn::A);
-    for _ in 0..QuickRow::LidOff.position(&a.hidden_rows()) {
+    for _ in 1..QuickRow::DateTime.position(&a.hidden_rows()) {
         press(&mut a, Btn::Down);
     }
     let out = frame(&a);
@@ -893,7 +894,14 @@ fn labels_leave_room_for_the_pointer_and_values_end_thirty_two_pixels_in() {
     open_at(&mut a, QuickRow::FastForward);
     let out = frame(&a);
     let right = OUT_W as f32 - QUICK_EDGE;
-    for row in QuickRow::FastForward.shown(&a.hidden_rows()) {
+    let hidden = a.hidden_rows();
+    let (start, len) = slot_ui::quick_window(QuickRow::FastForward, &hidden);
+    for row in QuickRow::FastForward
+        .shown(&hidden)
+        .into_iter()
+        .skip(start)
+        .take(len)
+    {
         let lit = row == QuickRow::FastForward;
         let [x, ..] = placed(&out, label(row, lit)).expect("a label was not drawn");
         assert_eq!(x + MENU_PAD as f32, QUICK_LABEL_X, "{row:?}'s label");
@@ -1284,12 +1292,10 @@ fn a_wide_panel_offers_gb_and_gbc_frames_from_none_through_the_card() {
 fn a_four_by_three_panel_keeps_ags_102_until_another_frame_is_picked() {
     let (d, mut a, _) = on_carousel();
     a.set_panel((640, 480));
-    for platform in [Platform::Gba, Platform::Gb, Platform::Gbc] {
-        assert_eq!(
-            a.resolved_bezel(platform),
-            BezelPick::Ags102,
-            "{platform:?}"
-        );
+    assert_eq!(a.resolved_bezel(Platform::Gba), BezelPick::Ags102);
+    // A Game Boy picture fills the panel's height there, so the SP frame is for the GBA only.
+    for platform in [Platform::Gb, Platform::Gbc] {
+        assert_eq!(a.resolved_bezel(platform), BezelPick::None, "{platform:?}");
     }
     assert!(a.sp_frame());
     open_at(&mut a, QuickRow::GbaBezel);
@@ -1303,8 +1309,11 @@ fn a_four_by_three_panel_keeps_ags_102_until_another_frame_is_picked() {
     }
     open_at(&mut a, QuickRow::GbcBezel);
     press(&mut a, Btn::Left);
-    assert_eq!(a.resolved_bezel(Platform::Gbc), BezelPick::Default);
-    assert_eq!(read_slot_state(d.path()).bezel_gbc, BezelPick::Default);
+    assert_eq!(
+        a.resolved_bezel(Platform::Gbc),
+        BezelPick::None,
+        "a 4:3 panel offers only the card's own Game Boy bezels"
+    );
     assert_eq!(read_slot_state(d.path()).bezel_gba, BezelPick::Ags102);
 }
 

@@ -508,3 +508,66 @@ fn the_repair_result_is_read_once() {
         assert!(!file.exists(), "{text} was left to be shown again");
     }
 }
+
+#[test]
+fn the_flip_work_led_shows_the_state_and_the_charge_led_is_left_to_the_kernel() {
+    let d = sysfs("255", "87");
+    let triggers = "none timer [battery-charging]";
+    leds(
+        &d,
+        "charger",
+        &[
+            ("brightness", "255"),
+            ("max_brightness", "255"),
+            ("trigger", triggers),
+        ],
+    );
+    leds(
+        &d,
+        "mmc0::",
+        &[("brightness", "0"), ("max_brightness", "255")],
+    );
+    leds(
+        &d,
+        "work",
+        &[
+            ("brightness", "255"),
+            ("max_brightness", "255"),
+            ("trigger", "none timer [default-on]"),
+        ],
+    );
+    assert_eq!(
+        slot_power::status_led(&d.path().join("class/leds")),
+        Some(d.path().join("class/leds/work"))
+    );
+    let mut p = platform(&d);
+    p.set_led(LedState::Off);
+    assert_eq!(read(&d, "work/brightness"), "0");
+    assert_eq!(
+        read(&d, "charger/brightness"),
+        "255",
+        "the charge LED is untouched"
+    );
+    // sysfs lists every trigger on each read; a plain file keeps only the last write.
+    leds(&d, "work", &[("trigger", "none timer [default-on]")]);
+    p.set_led(LedState::Low);
+    assert_eq!(read(&d, "work/trigger"), "timer", "low battery blinks");
+    p.set_led(LedState::Running);
+    assert_eq!(read(&d, "work/brightness"), "255");
+}
+
+#[test]
+fn neither_a_charge_led_nor_an_sd_activity_led_is_taken_for_the_status() {
+    let d = sysfs("255", "87");
+    leds(
+        &d,
+        "charger",
+        &[("brightness", "0"), ("max_brightness", "255")],
+    );
+    leds(
+        &d,
+        "mmc0::",
+        &[("brightness", "0"), ("max_brightness", "255")],
+    );
+    assert_eq!(slot_power::status_led(&d.path().join("class/leds")), None);
+}

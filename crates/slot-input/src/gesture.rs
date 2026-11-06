@@ -54,6 +54,7 @@ pub enum Action {
     PreviousShelf,
     NextShelf,
     Favorite,
+    GameSwitcher,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
@@ -316,7 +317,10 @@ impl Gestures {
         if let Some(d) = self.menu_down_at {
             if !self.menu_eject_fired && now.saturating_sub(d) >= MENU_HOLD_MS {
                 self.menu_eject_fired = true;
-                out.push(Action::Eject);
+                out.push(match self.context {
+                    Context::Shelf => Action::GameSwitcher,
+                    _ => Action::Eject,
+                });
             }
         }
         if let Some(d) = self.power_down_at {
@@ -339,6 +343,9 @@ impl Gestures {
     }
 
     fn down(&mut self, b: Btn, now: Millis) -> Vec<Action> {
+        if b == Btn::R3 {
+            return self.hold(b, Action::GameSwitcher);
+        }
         if !matches!(b, Btn::Menu | Btn::Select) && self.menu_held() {
             self.menu_chorded = true;
             self.menu_down_at = None;

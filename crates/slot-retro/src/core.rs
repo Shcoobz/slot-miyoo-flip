@@ -7,6 +7,11 @@ use crate::rumble::Rumble;
 pub const GBA_W: u32 = 240;
 pub const GBA_H: u32 = 160;
 
+/// The largest frame a core may send: SNES hi-res interlaced is 512x448 (478 with overscan).
+/// Anything past it is cut off.
+pub const MAX_FRAME_W: u32 = 1024;
+pub const MAX_FRAME_H: u32 = 512;
+
 #[derive(Copy, Clone, Default, PartialEq, Eq, Debug)]
 pub struct ButtonMask(pub u16);
 
@@ -23,18 +28,22 @@ impl ButtonMask {
     pub const X: u16 = 1 << 9;
     pub const L: u16 = 1 << 10;
     pub const R: u16 = 1 << 11;
+    /// Slot's own turbo buttons, in libretro's L3/R3 bits, which no core here reads; they never
+    /// reach the core, so X and Y stay free for the Super Nintendo.
+    pub const TURBO_A: u16 = 1 << 14;
+    pub const TURBO_B: u16 = 1 << 15;
 
     pub fn without_turbo(self) -> ButtonMask {
-        ButtonMask(self.0 & !(Self::X | Self::Y))
+        ButtonMask(self.0 & !(Self::TURBO_A | Self::TURBO_B))
     }
 
     pub fn turbo(self, frame: u32) -> ButtonMask {
-        let mut mask = self.0 & !(Self::X | Self::Y);
+        let mut mask = self.0 & !(Self::TURBO_A | Self::TURBO_B);
         if (frame / 3).is_multiple_of(2) {
-            if self.0 & Self::X != 0 {
+            if self.0 & Self::TURBO_A != 0 {
                 mask |= Self::A;
             }
-            if self.0 & Self::Y != 0 {
+            if self.0 & Self::TURBO_B != 0 {
                 mask |= Self::B;
             }
         }
@@ -83,7 +92,16 @@ pub trait RetroCore: Send {
     }
     fn set_option(&mut self, _key: &str, _value: &str) {}
     fn set_frame_skip(&mut self, _skip: bool) {}
+    /// Clears the core's cheats, then turns on each `(index, code)` given: the whole set each
+    /// time, the way libretro's reset-then-set calls expect.
+    fn set_cheats(&mut self, _cheats: &[(u32, String)]) {}
     fn video_xrgb8888(&self) -> &[u8];
+    /// The width and height of `video_xrgb8888`, packed with no row padding. A picture that fits
+    /// 240x160 (GBA, Game Boy) comes centred in a 240x160 frame; a bigger one (NES, SNES) at its
+    /// own size, which can change from one frame to the next.
+    fn video_size(&self) -> (u32, u32) {
+        (GBA_W, GBA_H)
+    }
     fn take_audio(&mut self) -> Vec<i16>;
     fn serialize(&mut self) -> Result<Vec<u8>, CoreError>;
     fn unserialize(&mut self, data: &[u8]) -> Result<(), CoreError>;

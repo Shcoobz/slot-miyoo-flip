@@ -42,3 +42,17 @@ fn buffers_are_recycled_rather_than_reallocated_per_frame() {
         f.allocated()
     );
 }
+
+#[test]
+fn a_frame_carries_the_size_it_was_published_at() {
+    let f = Frames::new(4);
+    publish(&f, 1, 4);
+    assert_eq!(f.latest().expect("a frame").size(), (240, 160));
+    let mut buf = f.take_write();
+    buf.clear();
+    buf.resize(256 * 224 * 4, 0);
+    f.publish_sized(buf, (256, 224));
+    let frame = f.latest().expect("a frame");
+    assert_eq!(frame.size(), (256, 224));
+    assert_eq!(frame.len(), 256 * 224 * 4);
+}

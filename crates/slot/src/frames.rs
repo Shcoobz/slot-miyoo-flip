@@ -2,6 +2,8 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use slot_retro::{GBA_H, GBA_W};
+
 pub struct Frames {
     inner: Mutex<Inner>,
     size: usize,
@@ -9,7 +11,7 @@ pub struct Frames {
 }
 
 struct Inner {
-    ready: Option<Vec<u8>>,
+    ready: Option<(Vec<u8>, (u32, u32))>,
     spare: Vec<Vec<u8>>,
     allocated: usize,
 }
@@ -39,18 +41,24 @@ impl Frames {
     }
 
     pub fn publish(&self, buf: Vec<u8>) {
+        self.publish_sized(buf, (GBA_W, GBA_H));
+    }
+
+    /// Publishes a frame of `size` (width, height) pixels, as the core sent it.
+    pub fn publish_sized(&self, buf: Vec<u8>, size: (u32, u32)) {
         let mut i = self.lock();
-        if let Some(dropped) = i.ready.replace(buf) {
+        if let Some((dropped, _)) = i.ready.replace((buf, size)) {
             i.spare.push(dropped);
         }
     }
 
     pub fn latest(self: &Arc<Self>) -> Option<FrameRef> {
-        let buf = self.lock().ready.take()?;
+        let (buf, size) = self.lock().ready.take()?;
         self.taken.fetch_add(1, Ordering::Relaxed);
         Some(FrameRef {
             frames: self.clone(),
             buf,
+            size,
         })
     }
 
@@ -78,6 +86,14 @@ impl Frames {
 pub struct FrameRef {
     frames: Arc<Frames>,
     buf: Vec<u8>,
+    size: (u32, u32),
+}
+
+impl FrameRef {
+    /// The frame's width and height in pixels.
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
 }
 
 impl Deref for FrameRef {
@@ -91,5 +107,28 @@ impl Deref for FrameRef {
 impl Drop for FrameRef {
     fn drop(&mut self) {
         self.frames.recycle(std::mem::take(&mut self.buf));
+    }
+}
+
+/// The game frame last put in the game texture. A paused or still game sends the same frame
+/// again and again; the texture and the panel already show it, so it is not uploaded again,
+/// and with nothing else moving the frame is not drawn or flipped either.
+#[derive(Default)]
+pub struct LastUpload {
+    size: Option<(u32, u32)>,
+    bytes: Vec<u8>,
+}
+
+impl LastUpload {
+    /// True when `frame` of `size` differs from the last one, which it then becomes. A compare
+    /// stops at the first differing byte, so a moving game pays little for it.
+    pub fn changed(&mut self, frame: &[u8], size: (u32, u32)) -> bool {
+        if self.size == Some(size) && self.bytes == frame {
+            return false;
+        }
+        self.size = Some(size);
+        self.bytes.clear();
+        self.bytes.extend_from_slice(frame);
+        true
     }
 }

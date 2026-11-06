@@ -27,12 +27,14 @@ pub enum Toast {
     CardRepairCharge,
     CardRepaired,
     CardRepairFailed,
+    FavoriteAdded,
+    FavoriteRemoved,
     Palette(GbColors),
     Duplicate(QuickRow),
 }
 
 impl Toast {
-    const FIXED: [Toast; 19] = [
+    const FIXED: [Toast; 21] = [
         Toast::StateSaved,
         Toast::StateLoaded,
         Toast::NeedsGpsp,
@@ -52,6 +54,8 @@ impl Toast {
         Toast::CardRepairCharge,
         Toast::CardRepaired,
         Toast::CardRepairFailed,
+        Toast::FavoriteAdded,
+        Toast::FavoriteRemoved,
     ];
 
     pub fn all() -> Vec<Toast> {
@@ -117,6 +121,8 @@ impl Toast {
 
     fn fixed_text(self) -> &'static str {
         match self {
+            Toast::FavoriteAdded => "Favorite Added",
+            Toast::FavoriteRemoved => "Favorite Removed",
             Toast::StateSaved => "State Saved",
             Toast::StateLoaded => "State Loaded",
             Toast::NeedsGpsp => "Please switch to gpSP",

@@ -1,0 +1,40 @@
+#!/bin/sh
+# BaseOS-my355 (Miyoo Flip) starts a frontend through this file.
+# The gamepad only exists once miyoo_inputd runs: it turns the Flip's buttons,
+# sticks and triggers into the "MIYOO Player1" device slot reads.
+SD=/mnt/SDCARD
+
+# miyoo_inputd scales the sticks with /userdata/joypad.config and joypad_right.config, the
+# calibration stock keeps in its userdata partition. BaseOS leaves /userdata empty, so lend it
+# a folder on the card (as spruce does); without it the sticks swing full at a nudge.
+U="$SD/Config/userdata"
+mkdir -p "$U"
+grep -q ' /userdata ' /proc/mounts || mount --bind "$U" /userdata
+
+if ! pidof miyoo_inputd >/dev/null 2>&1 && [ -x /usr/miyoo/bin/miyoo_inputd ]; then
+	(cd /tmp && /usr/miyoo/bin/miyoo_inputd >/dev/null 2>&1 &)
+fi
+
+# slot looks for input devices once at start, so wait for the pad (2 s at most).
+i=0
+while ! grep -q 'Name="MIYOO Player1"' /proc/bus/input/devices 2>/dev/null && [ "$i" -lt 20 ]; do
+	usleep 100000
+	i=$((i + 1))
+done
+
+# The rk817 codec boots with no output path and the speaker near silent; slot's volume is a
+# gain on the samples, so route the codec to the speaker at full scale (as spruce's maximum).
+amixer -c 0 cset name='Playback Path' SPK >/dev/null 2>&1
+amixer -c 0 cset name='SPK Volume' 100 >/dev/null 2>&1
+
+# BaseOS leaves the CPU on performance at 1.99 GHz. Clock like spruce's "smart" mode on the
+# Flip (its Flip.cfg): CPU ondemand from 408 MHz to 1.8 GHz, GPU and DRAM scaling on demand.
+CPU=/sys/devices/system/cpu/cpufreq/policy0
+echo ondemand > "$CPU/scaling_governor" 2>/dev/null
+echo 408000 > "$CPU/scaling_min_freq" 2>/dev/null
+echo 1800000 > "$CPU/scaling_max_freq" 2>/dev/null
+echo simple_ondemand > /sys/class/devfreq/fde60000.gpu/governor 2>/dev/null
+echo dmc_ondemand > /sys/class/devfreq/dmc/governor 2>/dev/null
+
+export SLOT_ROOT="$SD"
+exec /bin/sh "$SD/System/launch_frontend.sh"

@@ -940,3 +940,42 @@ fn a_press_seen_during_a_capture_leaves_nothing_behind() {
         "a stale L1 completed the pair"
     );
 }
+
+#[test]
+fn menu_hold_on_the_shelf_opens_the_game_switcher() {
+    let mut g = gestures();
+    g.set_context(slot_input::Context::Shelf);
+    g.feed(Down(Menu), 0);
+    assert!(g.tick(MENU_HOLD_MS - 1).is_empty());
+    assert_eq!(g.tick(MENU_HOLD_MS), vec![GameSwitcher]);
+    assert!(g.feed(Up(Menu), MENU_HOLD_MS + 50).is_empty());
+}
+
+#[test]
+fn menu_hold_in_game_still_ejects() {
+    let mut g = gestures();
+    g.feed(Down(Menu), 0);
+    assert_eq!(g.tick(MENU_HOLD_MS), vec![Eject]);
+}
+
+#[test]
+fn r3_opens_the_game_switcher_anywhere_and_its_release_is_swallowed() {
+    for context in [
+        slot_input::Context::Game,
+        slot_input::Context::Shelf,
+        slot_input::Context::Menu,
+    ] {
+        let mut g = gestures();
+        g.set_context(context);
+        assert_eq!(g.feed(Down(R3), 0), vec![GameSwitcher], "{context:?}");
+        assert!(g.feed(Up(R3), 80).is_empty(), "{context:?}");
+    }
+}
+
+#[test]
+fn r3_under_a_held_menu_is_not_a_chord() {
+    let mut g = menu_display();
+    g.feed(Down(Menu), 0);
+    assert_eq!(g.feed(Down(R3), 100), vec![GameSwitcher]);
+    assert!(g.feed(Up(R3), 150).is_empty());
+}

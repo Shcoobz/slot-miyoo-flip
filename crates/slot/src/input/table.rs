@@ -1,5 +1,7 @@
 use slot_input::{anywhere, Action, Contexts, Entry};
-use slot_store::{Binding, CarouselAction, CarouselKeys, Controls, Modifier, ShortcutKeys};
+use slot_store::{
+    Binding, CarouselAction, CarouselKeys, Controls, GameButton, Modifier, Platform, ShortcutKeys,
+};
 use slot_ui::QuickRow;
 
 use super::bind::{chord, shortcut_action};
@@ -82,6 +84,7 @@ impl Table {
         self.rows
             .iter()
             .filter(|r| r.row != row && r.contexts.meets(mine.contexts))
+            .filter(|r| !apart(mine.row, r.row))
             .find(|r| {
                 r.binding == mine.binding
                     || (!console(mine)
@@ -90,6 +93,18 @@ impl Table {
             })
             .map(|r| r.row)
     }
+}
+
+/// Two game buttons no console has both of never clash: the turbo buttons sit on X and Y for
+/// every console but the Super Nintendo, whose own X and Y take them there.
+fn apart(a: QuickRow, b: QuickRow) -> bool {
+    let (Some(a), Some(b)) = (a.game_button(), b.game_button()) else {
+        return false;
+    };
+    !Platform::ALL.into_iter().any(|p| {
+        let buttons = GameButton::of(p);
+        buttons.contains(&a) && buttons.contains(&b)
+    })
 }
 
 fn shelf_action(a: CarouselAction) -> Action {

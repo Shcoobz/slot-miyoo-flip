@@ -2,8 +2,10 @@ use slot::core_picker::{CorePicker, Outcome, Press, CLOSE_MS, HOP_MS, LIFT_MS, O
 use slot_store::Core;
 use slot_ui::Millis;
 
+const GBA_PAIR: [Core; 2] = [Core::Mgba, Core::Gpsp];
+
 fn opened(seat: Core, at: Millis) -> CorePicker {
-    let mut p = CorePicker::open(seat, at);
+    let mut p = CorePicker::open(seat, GBA_PAIR, at);
     p.start(at);
     p
 }
@@ -136,7 +138,7 @@ fn the_open_is_a_slide_then_a_lift_and_the_board_agrees() {
 
 #[test]
 fn a_picker_waits_until_it_is_started() {
-    let mut p = CorePicker::open(Core::Mgba, 100);
+    let mut p = CorePicker::open(Core::Mgba, GBA_PAIR, 100);
     assert!(p.waiting());
     assert_eq!(p.openness(5_000), 0.0);
     assert_eq!(p.waited(350), 250);
@@ -148,7 +150,7 @@ fn a_picker_waits_until_it_is_started() {
 
 #[test]
 fn a_second_start_keeps_the_first() {
-    let mut p = CorePicker::open(Core::Mgba, 0);
+    let mut p = CorePicker::open(Core::Mgba, GBA_PAIR, 0);
     p.start(300);
     p.start(500);
     assert_eq!(p.openness(300 + OPEN_MS), 1.0);
@@ -156,7 +158,7 @@ fn a_second_start_keeps_the_first() {
 
 #[test]
 fn backing_out_while_waiting_finishes_at_once() {
-    let mut p = CorePicker::open(Core::Mgba, 0);
+    let mut p = CorePicker::open(Core::Mgba, GBA_PAIR, 0);
     p.press(Press::Back, 50);
     assert!(p.finished(50));
 }
@@ -171,7 +173,7 @@ fn a_close_from_rest_takes_the_close_time() {
 
 #[test]
 fn the_arrows_do_nothing_while_the_picker_waits() {
-    let mut p = CorePicker::open(Core::Mgba, 0);
+    let mut p = CorePicker::open(Core::Mgba, GBA_PAIR, 0);
     assert_eq!(p.press(Press::Right, 100), Outcome::Nothing);
     assert_eq!(p.seat(), Core::Mgba, "a hop started while the cart waited");
     let chip = p.chip(100);
@@ -194,5 +196,25 @@ fn the_arrows_do_nothing_while_the_picker_waits() {
         p.chip(300 + HOP_MS / 2).seated,
         None,
         "no hop once the cart had opened"
+    );
+}
+
+#[test]
+fn a_game_boy_cart_picks_between_mgba_and_gambatte() {
+    let pair = Core::pair(slot_store::Platform::Gb);
+    assert_eq!(pair, [Core::Mgba, Core::Gambatte]);
+    let mut p = CorePicker::open(Core::Mgba, pair, 0);
+    p.start(0);
+    let t = OPEN_MS + LIFT_MS + SLIDE_MS + 1;
+    p.press(Press::Right, t);
+    assert_eq!(p.seat(), Core::Gambatte);
+    assert_eq!(
+        p.chip(t + HOP_MS + 1).across,
+        1.0,
+        "gambatte sits in the right socket"
+    );
+    assert_eq!(
+        p.press(Press::Keep, t + HOP_MS + 2),
+        Outcome::Write(Core::Gambatte)
     );
 }

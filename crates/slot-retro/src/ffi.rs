@@ -13,14 +13,20 @@ pub const GET_VARIABLE: c_uint = 15;
 pub const SET_VARIABLES: c_uint = 16;
 pub const GET_VARIABLE_UPDATE: c_uint = 17;
 pub const GET_RUMBLE_INTERFACE: c_uint = 23;
+pub const GET_SENSOR_INTERFACE: c_uint = 25 | 0x10000;
 pub const GET_LOG_INTERFACE: c_uint = 27;
 pub const GET_SAVE_DIRECTORY: c_uint = 31;
 pub const SET_AUDIO_BUFFER_STATUS_CALLBACK: c_uint = 62;
 pub const SET_NETPACKET_INTERFACE: c_uint = 78;
 
+pub const SENSOR_GYROSCOPE_ENABLE: c_uint = 2;
+pub const SENSOR_GYROSCOPE_DISABLE: c_uint = 3;
+pub const SENSOR_GYROSCOPE_Z: c_uint = 5;
+
 pub const RUMBLE_STRONG: c_uint = 0;
 pub const RUMBLE_WEAK: c_uint = 1;
 
+pub const PIXEL_FORMAT_0RGB1555: c_uint = 0;
 pub const PIXEL_FORMAT_XRGB8888: c_uint = 1;
 pub const PIXEL_FORMAT_RGB565: c_uint = 2;
 pub const DEVICE_JOYPAD: c_uint = 1;
@@ -84,6 +90,12 @@ pub struct RumbleInterface {
     pub set_rumble_state: SetRumbleStateFn,
 }
 
+#[repr(C)]
+pub struct SensorInterface {
+    pub set_sensor_state: unsafe extern "C" fn(c_uint, c_uint, c_uint) -> bool,
+    pub get_sensor_input: unsafe extern "C" fn(c_uint, c_uint) -> f32,
+}
+
 pub type AudioBufferStatusFn =
     unsafe extern "C" fn(active: bool, occupancy: c_uint, underrun_likely: bool);
 
@@ -145,7 +157,14 @@ pub struct Api {
     pub unserialize: unsafe extern "C" fn(*const c_void, usize) -> bool,
     pub get_memory_data: unsafe extern "C" fn(c_uint) -> *mut c_void,
     pub get_memory_size: unsafe extern "C" fn(c_uint) -> usize,
+    /// Optional: every core the API describes has the cheat calls, but one without them should
+    /// still run its games, just without cheats.
+    pub cheat_reset: Option<CheatResetFn>,
+    pub cheat_set: Option<CheatSetFn>,
 }
+
+pub type CheatResetFn = unsafe extern "C" fn();
+pub type CheatSetFn = unsafe extern "C" fn(index: c_uint, enabled: bool, code: *const c_char);
 
 impl Api {
     pub unsafe fn load(lib: &Library) -> Result<Self, CoreError> {
@@ -175,6 +194,11 @@ impl Api {
             unserialize: get!("retro_unserialize"),
             get_memory_data: get!("retro_get_memory_data"),
             get_memory_size: get!("retro_get_memory_size"),
+            cheat_reset: lib
+                .get::<CheatResetFn>(b"retro_cheat_reset\0")
+                .ok()
+                .map(|s| *s),
+            cheat_set: lib.get::<CheatSetFn>(b"retro_cheat_set\0").ok().map(|s| *s),
         })
     }
 }

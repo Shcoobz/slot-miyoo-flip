@@ -14,10 +14,24 @@ pub const ABS_HAT0X: u16 = 0x10;
 pub const ABS_HAT0Y: u16 = 0x11;
 pub const ABS_LSX: u16 = 0x02;
 pub const ABS_LSY: u16 = 0x03;
+pub const ABS_X: u16 = 0x00;
+pub const ABS_Y: u16 = 0x01;
+pub const ABS_Z: u16 = 0x02;
+pub const ABS_RZ: u16 = 0x05;
+/// The right stick's X on the Flip's pad (its Y is 0x04).
+pub const MIYOO_RIGHT_X: u16 = 0x03;
+
+pub const TRIGGER_PULLED: i32 = 127;
+
+pub const MIYOO_PAD: &str = "MIYOO Player1";
+pub const MIYOO_LID: &str = "hall wake key";
 
 pub const STICK_DEADZONE: i32 = 2048;
+/// Half of miyoo_inputd's +-32767; the Flip's sticks rest as far out as +-10000.
+pub const MIYOO_STICK_DEADZONE: i32 = 16384;
 
-const LEFT_STICK_TARGETS: [&str; 6] = [
+const LEFT_STICK_TARGETS: [&str; 7] = [
+    "my355",
     "rg34xxsp",
     "rg35xxh",
     "rg35xxpro",
@@ -30,30 +44,105 @@ pub fn has_left_stick(target: &str) -> bool {
     LEFT_STICK_TARGETS.contains(&target)
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum Layout {
+    #[default]
+    Anbernic,
+    MiyooPad,
+}
+
+impl Layout {
+    pub fn of(name: &str) -> Option<Layout> {
+        match name {
+            MIYOO_PAD => Some(Layout::MiyooPad),
+            MIYOO_LID => None,
+            _ => Some(Layout::Anbernic),
+        }
+    }
+
+    fn button(self, code: u16) -> Option<Btn> {
+        match self {
+            Layout::Anbernic => code_to_btn(code),
+            Layout::MiyooPad => miyoo_pad_btn(code),
+        }
+    }
+
+    fn stick(self) -> [u16; 2] {
+        match self {
+            Layout::Anbernic => [ABS_LSX, ABS_LSY],
+            Layout::MiyooPad => [ABS_X, ABS_Y],
+        }
+    }
+
+    fn deadzone(self) -> i32 {
+        match self {
+            Layout::Anbernic => STICK_DEADZONE,
+            Layout::MiyooPad => MIYOO_STICK_DEADZONE,
+        }
+    }
+
+    /// The axis that turns the emulated gyroscope: the right stick's X on the Flip.
+    pub fn gyro_axis(self) -> Option<u16> {
+        match self {
+            Layout::Anbernic => None,
+            Layout::MiyooPad => Some(MIYOO_RIGHT_X),
+        }
+    }
+
+    fn triggers(self) -> Option<[u16; 2]> {
+        match self {
+            Layout::Anbernic => None,
+            Layout::MiyooPad => Some([ABS_Z, ABS_RZ]),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Hat {
+    layout: Layout,
     hat: [i32; 2],
     stick: [i32; 2],
+    pulled: [bool; 2],
     steers: bool,
 }
 
 impl Hat {
+    pub fn for_layout(layout: Layout) -> Self {
+        Hat {
+            layout,
+            ..Hat::default()
+        }
+    }
+
     pub fn steer_with_stick(&mut self, on: bool) {
         self.steers = on;
     }
 
     pub fn feed(&mut self, ev: Ev) -> Vec<RawEvent> {
+        let deadzone = self.layout.deadzone();
         let tilt = |v: i32| match v {
-            v if v > STICK_DEADZONE => 1,
-            v if v < -STICK_DEADZONE => -1,
+            v if v > deadzone => 1,
+            v if v < -deadzone => -1,
             _ => 0,
         };
+        if self.layout.gyro_axis() == Some(ev.code) {
+            slot_retro::steer_gyro(ev.value);
+            return Vec::new();
+        }
+        if let Some(side) = self
+            .layout
+            .triggers()
+            .and_then(|t| t.iter().position(|c| *c == ev.code))
+        {
+            return self.pull(side, ev.value > TRIGGER_PULLED);
+        }
         let steer = |v: i32| if self.steers { tilt(v) } else { 0 };
+        let [stick_x, stick_y] = self.layout.stick();
         let (axis, from_stick, value) = match ev.code {
             ABS_HAT0X => (0, false, ev.value.signum()),
             ABS_HAT0Y => (1, false, ev.value.signum()),
-            ABS_LSX => (0, true, steer(ev.value)),
-            ABS_LSY => (1, true, steer(ev.value)),
+            c if c == stick_x => (0, true, steer(ev.value)),
+            c if c == stick_y => (1, true, steer(ev.value)),
             _ => return Vec::new(),
         };
         let was = self.held(axis);
@@ -75,6 +164,19 @@ impl Hat {
             out.push(RawEvent::Down(btn(now)));
         }
         out
+    }
+
+    fn pull(&mut self, side: usize, pulled: bool) -> Vec<RawEvent> {
+        if self.pulled[side] == pulled {
+            return Vec::new();
+        }
+        self.pulled[side] = pulled;
+        let btn = [Btn::L2, Btn::R2][side];
+        vec![if pulled {
+            RawEvent::Down(btn)
+        } else {
+            RawEvent::Up(btn)
+        }]
     }
 
     fn held(&self, axis: usize) -> i32 {
@@ -102,8 +204,12 @@ pub fn decode(bytes: &[u8]) -> Option<Ev> {
 }
 
 pub fn to_raw(ev: Ev) -> Option<RawEvent> {
+    to_raw_for(ev, Layout::Anbernic)
+}
+
+pub fn to_raw_for(ev: Ev, layout: Layout) -> Option<RawEvent> {
     let btn = match ev.kind {
-        EV_KEY => code_to_btn(ev.code)?,
+        EV_KEY => layout.button(ev.code)?,
         EV_SW if ev.code == SW_LID => Btn::Lid,
         _ => return None,
     };
@@ -130,6 +236,23 @@ pub fn code_to_btn(code: u16) -> Option<Btn> {
         115 => Btn::VolUp,
         114 => Btn::VolDown,
         116 => Btn::Power,
+        _ => return None,
+    })
+}
+
+pub fn miyoo_pad_btn(code: u16) -> Option<Btn> {
+    Some(match code {
+        0x130 => Btn::B,
+        0x131 => Btn::A,
+        0x133 => Btn::Y,
+        0x134 => Btn::X,
+        0x136 => Btn::L1,
+        0x137 => Btn::R1,
+        0x13a => Btn::Select,
+        0x13b => Btn::Start,
+        0x13c => Btn::Menu,
+        0x13d => Btn::L3,
+        0x13e => Btn::R3,
         _ => return None,
     })
 }

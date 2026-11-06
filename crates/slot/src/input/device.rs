@@ -8,13 +8,55 @@ use std::time::Instant;
 use slot_input::{Btn, InputSource, Millis, RawEvent};
 
 use super::evdev::{
-    decode, device_name, pick_devices, to_raw, Ev, Hat, EVENT_BYTES, EV_ABS, EV_KEY, EV_SYN,
+    decode, device_name, pick_devices, to_raw_for, Ev, Hat, Layout, EVENT_BYTES, EV_ABS, EV_KEY,
+    EV_SYN,
 };
 use super::trace;
 
 const DEV: &str = "/dev/input";
 const SYS: &str = "/sys/class/input";
 const PSY: &str = "/sys/class/power_supply";
+const MIYOO_HALL: &str = "/sys/devices/platform/hall-mh248/hallvalue";
+const GYRO_FILE: &str = "Config/gyro.txt";
+
+/// Config/gyro.txt tunes the stick-driven gyroscope: `mode=rate` (default) with `rate_dps=` (or
+/// `rate_left_dps=` and `rate_right_dps=`) and `curve=`, or `mode=angle` with `tilt_deg=` and
+/// `follow_ms=`.
+fn tune_gyro(root: &Path) {
+    let text = std::fs::read_to_string(root.join(GYRO_FILE)).unwrap_or_default();
+    let value = |key: &str| {
+        text.lines().find_map(|l| {
+            l.trim()
+                .strip_prefix(key)?
+                .strip_prefix('=')?
+                .trim()
+                .parse::<f32>()
+                .ok()
+        })
+    };
+    let angle = text.lines().any(|l| l.trim() == "mode=angle");
+    let rate = value("rate_dps").unwrap_or(slot_retro::FULL_RATE_DPS);
+    let left = value("rate_left_dps").unwrap_or(rate);
+    let right = value("rate_right_dps").unwrap_or(rate);
+    let curve = value("curve").unwrap_or(1.0);
+    let tilt = value("tilt_deg").unwrap_or(slot_retro::FULL_TILT_DEG);
+    let follow = value("follow_ms").map_or(slot_retro::FOLLOW_S, |ms| ms / 1000.0);
+    slot_retro::tune_gyro(slot_retro::GyroTuning {
+        angle_mode: angle,
+        rate_left_dps: left,
+        rate_right_dps: right,
+        curve,
+        tilt_deg: tilt,
+        follow_s: follow,
+    });
+    match angle {
+        true => eprintln!(
+            "slot: gyro: angle, full tilt {tilt} deg, follow {:.0} ms",
+            follow * 1000.0
+        ),
+        false => eprintln!("slot: gyro: rate, left {left} right {right} deg/s, curve {curve}"),
+    }
+}
 
 const LID_POLL_MS: Millis = 150;
 
@@ -33,18 +75,23 @@ impl DeviceInput {
 
     pub fn open_in(dev: &Path, sys: &Path, root: &Path, trace: bool) -> Self {
         let trace = trace.then(|| Trace::start(root, dev, sys)).flatten();
-        DeviceInput::open_traced(dev, sys, trace)
+        DeviceInput::open_traced(dev, sys, root, trace)
     }
 
-    fn open_traced(dev: &Path, sys: &Path, trace: Option<Arc<Trace>>) -> Self {
+    fn open_traced(dev: &Path, sys: &Path, root: &Path, trace: Option<Arc<Trace>>) -> Self {
         let pending: Arc<Mutex<Vec<RawEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let stick = Arc::new(AtomicBool::new(false));
         for node in pick_devices(dev, sys) {
-            eprintln!(
-                "slot: input {} ({})",
-                node.display(),
-                device_name(sys, &node)
-            );
+            let device = device_name(sys, &node);
+            let Some(layout) = Layout::of(&device) else {
+                eprintln!("slot: input {} ({device}) skipped", node.display());
+                continue;
+            };
+            eprintln!("slot: input {} ({device}, {layout:?})", node.display());
+            if layout.gyro_axis().is_some() {
+                slot_retro::steer_gyro(0);
+                tune_gyro(root);
+            }
             quicken_poll(sys, &node);
             let queue = pending.clone();
             let steers = stick.clone();
@@ -52,7 +99,7 @@ impl DeviceInput {
             let trace = trace.clone();
             let spawned = std::thread::Builder::new()
                 .name(format!("slot-input-{name}"))
-                .spawn(move || read_node(&node, &queue, &steers, trace.as_deref()));
+                .spawn(move || read_node(&node, layout, &queue, &steers, trace.as_deref()));
             if let Err(e) = spawned {
                 eprintln!("slot: input {name}: {e}");
             }
@@ -60,7 +107,8 @@ impl DeviceInput {
         DeviceInput {
             pending,
             stick,
-            hall: find_hall(Path::new(PSY)),
+            hall: find_hall(Path::new(PSY))
+                .or_else(|| Some(PathBuf::from(MIYOO_HALL)).filter(|p| p.is_file())),
             lid_shut: None,
             next_lid_poll: 0,
         }
@@ -93,6 +141,7 @@ fn quicken_poll(sys: &Path, node: &Path) {
 
 fn read_node(
     node: &Path,
+    layout: Layout,
     queue: &Mutex<Vec<RawEvent>>,
     steers: &AtomicBool,
     trace: Option<&Trace>,
@@ -101,7 +150,7 @@ fn read_node(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| node.display().to_string());
-    let mut hat = Hat::default();
+    let mut hat = Hat::for_layout(layout);
     let mut file = match File::open(node) {
         Ok(f) => f,
         Err(e) => {
@@ -133,7 +182,7 @@ fn read_node(
                     hat.steer_with_stick(steers.load(Ordering::Relaxed));
                     events.extend(hat.feed(ev));
                 }
-                _ => events.extend(to_raw(ev)),
+                _ => events.extend(to_raw_for(ev, layout)),
             }
         }
         if events.is_empty() {

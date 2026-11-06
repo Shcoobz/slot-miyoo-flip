@@ -10,6 +10,12 @@
 
 </div>
 
+> [!NOTE]
+> **Miyoo Flip:** this is an unofficial fork that runs slot on the Miyoo Flip (with
+> baseos-my355). A ready-to-copy card is in [`flip-card/`](flip-card); see
+> [README-FLIP.md](README-FLIP.md) for install, credits and licence notes. The rest of this
+> page is upstream slot's README.
+
 ---
 
 # What is slot?

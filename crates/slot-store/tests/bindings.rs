@@ -35,6 +35,36 @@ fn a_gba_has_twelve_buttons_and_a_game_boy_ten() {
 }
 
 #[test]
+fn the_nes_has_the_game_boy_pad_and_the_snes_a_pad_of_its_own() {
+    assert_eq!(GameButton::of(Platform::Nes), GameButton::of(Platform::Gb));
+    let snes = GameButton::of(Platform::Snes);
+    for g in [
+        GameButton::A,
+        GameButton::B,
+        GameButton::X,
+        GameButton::Y,
+        GameButton::L,
+        GameButton::R,
+        GameButton::Select,
+        GameButton::Start,
+    ] {
+        assert!(snes.contains(&g), "the SNES lacks {g:?}");
+    }
+    assert!(!snes.contains(&GameButton::TurboA));
+    assert!(!snes.contains(&GameButton::TurboB));
+    assert!(!GameButton::of(Platform::Gba).contains(&GameButton::X));
+}
+
+#[test]
+fn the_snes_face_buttons_start_where_the_flip_has_them() {
+    let c = Controls::default();
+    assert_eq!(c.game(GameButton::A), plain(Device::A));
+    assert_eq!(c.game(GameButton::B), plain(Device::B));
+    assert_eq!(c.game(GameButton::X), plain(Device::X));
+    assert_eq!(c.game(GameButton::Y), plain(Device::Y));
+}
+
+#[test]
 fn every_console_button_starts_on_the_device_button_of_its_name() {
     let c = Controls::default();
     assert_eq!(c.game(GameButton::A), plain(Device::A));

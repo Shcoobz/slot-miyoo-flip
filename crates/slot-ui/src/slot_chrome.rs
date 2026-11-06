@@ -1,11 +1,11 @@
 use slot_gfx::{Canvas, Draw, TexId, OUT_H};
 use slot_store::Cart;
 
-use crate::cart::{cart_box, label_colour, label_text, seated_box, SEATED_W};
+use crate::cart::{label_colour, label_text, seated_box, SEATED_W};
 use crate::footer::Printed;
 use crate::icon::icon_box;
 use crate::plate::HINT_H;
-use crate::shelf::foot_y;
+use crate::shelf::{foot_y, shelf_box};
 
 pub const ALERT_PX: f32 = 44.0;
 
@@ -122,8 +122,7 @@ impl SlotChrome<'_> {
 
         draw_slot_back(canvas, self.slot, slot_alpha, out);
 
-        let (cw, ch) = cart_box(self.cart.platform);
-        let (cw, ch) = (cw as f32, ch as f32);
+        let (cw, ch) = shelf_box(self.cart.platform);
 
         let scale = self.scale.clamp(0.0, 1.0);
         let (w0, h0) = (cw * scale, ch * scale);

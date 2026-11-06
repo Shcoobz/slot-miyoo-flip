@@ -1,6 +1,6 @@
 use slot_input::{Action, Btn};
 use slot_retro::ButtonMask;
-use slot_store::{Controls, GameButton, Modifier};
+use slot_store::{Controls, GameButton, Modifier, Platform};
 
 use super::bind::device_btn;
 
@@ -25,9 +25,12 @@ impl Pad {
         }
     }
 
-    pub fn mask(&self, controls: &Controls) -> ButtonMask {
-        let bits = GameButton::ALL
-            .into_iter()
+    /// The pad as the playing console sees it: only its own buttons count, so the Flip's X and
+    /// Y are turbo on most consoles and the Super Nintendo's X and Y on that one.
+    pub fn mask(&self, controls: &Controls, platform: Platform) -> ButtonMask {
+        let bits = GameButton::of(platform)
+            .iter()
+            .copied()
             .filter(|g| {
                 controls.game(*g).is_some_and(|binding| {
                     let b = device_btn(binding.button);
@@ -60,7 +63,9 @@ fn bit(g: GameButton) -> u16 {
         GameButton::Start => ButtonMask::START,
         GameButton::L => ButtonMask::L,
         GameButton::R => ButtonMask::R,
-        GameButton::TurboA => ButtonMask::X,
-        GameButton::TurboB => ButtonMask::Y,
+        GameButton::TurboA => ButtonMask::TURBO_A,
+        GameButton::TurboB => ButtonMask::TURBO_B,
+        GameButton::X => ButtonMask::X,
+        GameButton::Y => ButtonMask::Y,
     }
 }

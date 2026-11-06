@@ -14,9 +14,10 @@ use slot_input::{Action, Btn, RawEvent};
 use slot_retro::ButtonMask;
 use slot_store::{write_slot_state, Cart, Core, Platform, SlotState};
 use slot_ui::{
-    board_at, board_in, grown, lid_at, lid_from, on_board, opening, shelf_cart_at, Canvas, Draw,
-    Icon, Placed, TexId, BOARD_W, CART_H, CART_W, CHIP_H, CHIP_U, CHIP_V, CHIP_W, HINT_EDGE,
-    LID_TURN, MOUTH_H, OUT_H, OUT_W, SLIDE_UP, SOCKET_H, SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
+    board_at, board_in, grown, lid_at, lid_from, on_board, open_layout, opening, shelf_box,
+    shelf_cart_at, Canvas, Draw, Icon, Placed, TexId, BOARD_W, CART_H, CART_W, CHIP_H, CHIP_U,
+    CHIP_V, CHIP_W, GBA_SHELF_ZOOM, HINT_EDGE, LID_TURN, MOUTH_H, OUT_H, OUT_W, SLIDE_UP, SOCKET_H,
+    SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
 };
 
 fn play(a: &mut App) {
@@ -329,25 +330,39 @@ fn tap(a: &mut App, btn: Btn) {
 
 #[test]
 fn the_shoulders_ring_over_the_shelves() {
+    // The Game Boy shelf comes before the Game Boy Advance one.
     let mut a = app_with_platforms(&[(Platform::Gba, "Emerald"), (Platform::Gb, "Tetris")]);
-    assert_eq!(a.selected_stem(), Some("Emerald"));
-    tap(&mut a, Btn::R1);
-    assert_eq!(
-        a.selected_stem(),
-        Some("Tetris"),
-        "R1 did not reach the Game Boy shelf"
-    );
+    assert_eq!(a.selected_stem(), Some("Tetris"));
     tap(&mut a, Btn::R1);
     assert_eq!(
         a.selected_stem(),
         Some("Emerald"),
+        "R1 did not reach the Game Boy Advance shelf"
+    );
+    tap(&mut a, Btn::R1);
+    assert_eq!(
+        a.shelf_platform_name(),
+        Some("Extras"),
+        "R1 did not reach Extras at the end of the ring"
+    );
+    assert_eq!(a.selected_stem(), None, "Extras stood a cart up");
+    tap(&mut a, Btn::R1);
+    assert_eq!(
+        a.selected_stem(),
+        Some("Tetris"),
         "the ring did not come back round"
     );
     tap(&mut a, Btn::L1);
     assert_eq!(
+        a.shelf_platform_name(),
+        Some("Extras"),
+        "L1 did not reach Extras"
+    );
+    tap(&mut a, Btn::L1);
+    assert_eq!(
         a.selected_stem(),
-        Some("Tetris"),
-        "L1 did not reach the Game Boy shelf"
+        Some("Emerald"),
+        "L1 did not reach the Game Boy Advance shelf"
     );
 }
 
@@ -358,7 +373,6 @@ fn a_colour_cart_stands_on_a_shelf_of_its_own() {
         (Platform::Gb, "Tetris"),
         (Platform::Gbc, "Chromatic"),
     ]);
-    tap(&mut a, Btn::R1);
     assert_eq!(a.selected_stem(), Some("Tetris"));
     tap(&mut a, Btn::R1);
     assert_eq!(
@@ -367,13 +381,18 @@ fn a_colour_cart_stands_on_a_shelf_of_its_own() {
         "the Colour cart shares the Game Boy shelf"
     );
     tap(&mut a, Btn::R1);
+    assert_eq!(a.selected_stem(), Some("Emerald"));
+    tap(&mut a, Btn::R1);
+    assert_eq!(a.shelf_platform_name(), Some("Extras"));
+    tap(&mut a, Btn::R1);
     assert_eq!(
         a.selected_stem(),
-        Some("Emerald"),
-        "three shelves did not ring back round to the first"
+        Some("Tetris"),
+        "three shelves and Extras did not ring back round to the first"
     );
     tap(&mut a, Btn::L1);
-    assert_eq!(a.selected_stem(), Some("Chromatic"));
+    tap(&mut a, Btn::L1);
+    assert_eq!(a.selected_stem(), Some("Emerald"));
 }
 
 #[test]
@@ -385,33 +404,33 @@ fn every_shelf_keeps_the_cart_it_was_left_on() {
         (Platform::Gb, "Zelda"),
     ]);
     tap(&mut a, Btn::Right);
-    assert_eq!(a.selected_stem(), Some("Fusion"));
-    tap(&mut a, Btn::R1);
-    assert_eq!(a.selected_stem(), Some("Tetris"));
-    tap(&mut a, Btn::Right);
     assert_eq!(a.selected_stem(), Some("Zelda"));
+    tap(&mut a, Btn::R1);
+    assert_eq!(a.selected_stem(), Some("Emerald"));
+    tap(&mut a, Btn::Right);
+    assert_eq!(a.selected_stem(), Some("Fusion"));
 
     tap(&mut a, Btn::L1);
     assert_eq!(
         a.selected_stem(),
-        Some("Fusion"),
-        "the Game Boy Advance shelf forgot where it was"
+        Some("Zelda"),
+        "the Game Boy shelf forgot where it was"
     );
     tap(&mut a, Btn::R1);
     assert_eq!(
         a.selected_stem(),
-        Some("Zelda"),
-        "the Game Boy shelf forgot where it was"
+        Some("Fusion"),
+        "the Game Boy Advance shelf forgot where it was"
     );
 }
 
 #[test]
 fn a_shelf_comes_back_settled_where_it_was_left() {
     let mut a = app_with_platforms(&[
-        (Platform::Gba, "Aaa"),
-        (Platform::Gba, "Bbb"),
-        (Platform::Gba, "Ccc"),
-        (Platform::Gb, "Tetris"),
+        (Platform::Gb, "Aaa"),
+        (Platform::Gb, "Bbb"),
+        (Platform::Gb, "Ccc"),
+        (Platform::Gba, "Tetris"),
     ]);
     let faces: Vec<TexId> = (0..4).map(|i| TexId::from_raw(700 + i)).collect();
     a.set_faces(faces.clone());
@@ -427,7 +446,7 @@ fn a_shelf_comes_back_settled_where_it_was_left() {
     tap(&mut a, Btn::R1);
     assert!(
         tex_at(&frame(&a), faces[3]).is_some(),
-        "the Game Boy cart has no face of its own"
+        "the Game Boy Advance cart has no face of its own"
     );
     tap(&mut a, Btn::L1);
     a.update(1.0 / 60.0);
@@ -444,12 +463,13 @@ fn a_shelf_comes_back_settled_where_it_was_left() {
 
 #[test]
 fn the_shoulders_do_nothing_when_there_is_one_shelf_to_be_on() {
-    let mut a = app_with_platforms(&[(Platform::Gba, "Emerald"), (Platform::Gba, "Fusion")]);
+    // Extras stands beside any shelf with games, so only a card with none has one shelf.
+    let mut a = app_with_platforms(&[]);
     for btn in [Btn::L1, Btn::R1] {
         tap(&mut a, btn);
         assert_eq!(
-            a.selected_stem(),
-            Some("Emerald"),
+            a.shelf_platform_name(),
+            None,
             "{btn:?} moved a shelf with no neighbour"
         );
         assert_eq!(
@@ -474,14 +494,16 @@ fn the_switch_changes_the_name_on_the_band_and_says_nothing() {
     ]);
     assert_eq!(
         a.shelf_platform_name(),
-        Some("Game Boy Advance"),
-        "the card did not open on the GBA"
+        Some("Game Boy"),
+        "the card did not open on its first shelf, the Game Boy"
     );
     for (btn, want) in [
-        (Btn::R1, "Game Boy"),
         (Btn::R1, "Game Boy Color"),
         (Btn::R1, "Game Boy Advance"),
-        (Btn::L1, "Game Boy Color"),
+        (Btn::R1, "Extras"),
+        (Btn::R1, "Game Boy"),
+        (Btn::L1, "Extras"),
+        (Btn::L1, "Game Boy Advance"),
     ] {
         common::through_at(&mut a, btn, 1_000);
         assert_eq!(
@@ -494,32 +516,54 @@ fn the_switch_changes_the_name_on_the_band_and_says_nothing() {
     a.update(5.0);
     assert_eq!(
         a.shelf_platform_name(),
-        Some("Game Boy Color"),
+        Some("Game Boy Advance"),
         "the name faded"
     );
 }
 
 #[test]
-fn a_card_on_one_shelf_names_nothing_because_there_is_nowhere_to_switch_to() {
+fn a_card_of_one_system_names_its_shelf_because_extras_stands_beside_it() {
     let mut alone = app_with_platforms(&[(Platform::Gba, "Emerald"), (Platform::Gba, "Fusion")]);
     assert_eq!(
         alone.shelf_platform_name(),
-        None,
-        "a card with only Game Boy Advance carts named its platform anyway"
+        Some("Game Boy Advance"),
+        "a card with only Game Boy Advance carts did not say which shelf it was on"
     );
-    for btn in [Btn::L1, Btn::R1] {
+    for (btn, want) in [(Btn::L1, "Extras"), (Btn::R1, "Game Boy Advance")] {
         common::through_at(&mut alone, btn, 1_000);
         assert_eq!(
             alone.shelf_platform_name(),
+            Some(want),
+            "{btn:?} did not swap the system shelf and Extras"
+        );
+        assert_eq!(
+            alone.toast(),
             None,
-            "{btn:?} named a shelf on a card that has one"
+            "{btn:?} put a banner up over the carts"
+        );
+        assert_eq!(
+            alone.shelf_shake(),
+            0.0,
+            "{btn:?} refused a shelf it could reach"
         );
     }
+    assert_eq!(
+        alone.selected_stem(),
+        Some("Emerald"),
+        "the shelf forgot its cart on the way back from Extras"
+    );
+
+    let empty = app_with_platforms(&[]);
+    assert_eq!(
+        empty.shelf_platform_name(),
+        None,
+        "a card with no games named a shelf it has nowhere to switch from"
+    );
 
     let two = app_with_platforms(&[(Platform::Gba, "Emerald"), (Platform::Gb, "Tetris")]);
     assert_eq!(
         two.shelf_platform_name(),
-        Some("Game Boy Advance"),
+        Some("Game Boy"),
         "a card with two shelves did not say which one it was on"
     );
 }
@@ -537,6 +581,8 @@ fn the_shoulders_belong_to_the_game_while_one_is_playing() {
         (Platform::Gba, "Fusion"),
         (Platform::Gb, "Tetris"),
     ]);
+    tap(&mut a, Btn::R1);
+    assert_eq!(a.selected_stem(), Some("Emerald"));
     a.apply(Action::Insert);
     a.on_core_ready();
     for _ in 0..120 {
@@ -554,10 +600,10 @@ fn the_shoulders_belong_to_the_game_while_one_is_playing() {
 #[test]
 fn a_held_direction_does_not_follow_the_shelf_it_was_pressed_on() {
     let mut a = app_with_platforms(&[
-        (Platform::Gba, "Aaa"),
-        (Platform::Gba, "Bbb"),
-        (Platform::Gba, "Ccc"),
-        (Platform::Gb, "Tetris"),
+        (Platform::Gb, "Aaa"),
+        (Platform::Gb, "Bbb"),
+        (Platform::Gb, "Ccc"),
+        (Platform::Gba, "Tetris"),
     ]);
     a.apply_at(Action::GbaDown(Btn::Right), 0);
     assert_eq!(a.selected_stem(), Some("Bbb"));
@@ -1106,13 +1152,18 @@ fn fake_picker_faces(app: &mut App) -> PickerFaces {
     f
 }
 
+/// How wide the shelf draws the selected GBA cart.
+fn shelf_cart_w() -> f32 {
+    shelf_box(Platform::Gba).0
+}
+
 fn resting_cart(out: &[Draw]) -> f32 {
     out.iter()
         .filter_map(|d| match *d {
             Draw::Rect { x, w, .. } | Draw::Tex { x, w, .. } => Some((x, w)),
             _ => None,
         })
-        .find(|(_, w)| (w - CART_W as f32).abs() < 0.01)
+        .find(|(_, w)| (w - shelf_cart_w()).abs() < 0.01)
         .expect("no cart standing on the row")
         .0
 }
@@ -1217,8 +1268,8 @@ fn assert_parts_on_board(out: &[Draw], f: &PickerFaces, board: Placed, when: &st
 fn carts_standing(out: &[Draw], board: TexId) -> usize {
     out.iter()
         .filter(|d| match **d {
-            Draw::Rect { w, .. } => (w - CART_W as f32).abs() < 0.01,
-            Draw::Tex { w, tex, .. } => tex != board && (w - CART_W as f32).abs() < 0.01,
+            Draw::Rect { w, .. } => (w - shelf_cart_w()).abs() < 0.01,
+            Draw::Tex { w, tex, .. } => tex != board && (w - shelf_cart_w()).abs() < 0.01,
             _ => false,
         })
         .count()
@@ -1281,11 +1332,21 @@ fn the_open_cart_rests_over_the_shelf_with_its_lid_turned() {
         .expect("no slot on the shelf");
     assert!(board_i > mouth, "the board is drawn under the shelf");
 
+    // Sockets and chips are drawn at the board's own zoom, 1.25x at the shelf's size.
+    let zoom = open_layout(Platform::Gba).zoom(rest);
     for (i, socket) in f.sockets.iter().enumerate() {
         let (x, y) = on_board(rest, SOCKET_U[i], SOCKET_V);
         let (_, at) = tex_at(&out, *socket).expect("a socket is missing");
         assert!(
-            near(at, [x.round(), y.round(), SOCKET_W as f32, SOCKET_H as f32]),
+            near(
+                at,
+                [
+                    x.round(),
+                    y.round(),
+                    SOCKET_W as f32 * zoom,
+                    SOCKET_H as f32 * zoom
+                ]
+            ),
             "socket {i} at {at:?}"
         );
     }
@@ -1298,10 +1359,10 @@ fn the_open_cart_rests_over_the_shelf_with_its_lid_turned() {
         Placed {
             x: cx,
             y: cy,
-            w: CHIP_W as f32,
-            h: CHIP_H as f32,
+            w: CHIP_W as f32 * zoom,
+            h: CHIP_H as f32 * zoom,
         },
-        TURN_PAD as f32,
+        TURN_PAD as f32 * zoom,
     );
     assert!(
         near(
@@ -1334,8 +1395,13 @@ fn the_open_cart_rests_over_the_shelf_with_its_lid_turned() {
         "expected the lid's shadow alone, got {shadows:?}"
     );
     let (shadow_i, s) = shadows[0];
+    let drop = open_layout(Platform::Gba).lid_shadow.2;
+    let (shadow_x, shadow_y) = (
+        lid_rest.x + lid_rest.w / 2.0,
+        lid_rest.y + lid_rest.h + drop,
+    );
     assert!(
-        (s[0] + s[2] / 2.0 - 360.0).abs() < 0.01 && (s[1] + s[3] / 2.0 - 140.0).abs() < 0.01,
+        (s[0] + s[2] / 2.0 - shadow_x).abs() < 0.01 && (s[1] + s[3] / 2.0 - shadow_y).abs() < 0.01,
         "the lid's shadow is not under it: {s:?}"
     );
     assert!(shadow_i < lid_i, "the lid's shadow is drawn over the lid");
@@ -1344,12 +1410,11 @@ fn the_open_cart_rests_over_the_shelf_with_its_lid_turned() {
     let at = |tex| tex_at(&out, tex).expect("a legend hint is missing").1;
     let seen = |w: u32| (w - HINT_EDGE) as f32;
     let y = OUT_H as f32 - MOUTH_H * 2.0;
-    assert_eq!(at(cancel.0), [234.0, y, cancel.1 as f32, MOUTH_H]);
-    assert_eq!(
-        at(swap.0)[0] + seen(swap.1) / 2.0,
-        OUT_W as f32 / 2.0,
-        "Swap is off the panel's centre"
-    );
+    // The legend is one row centred on the panel: Cancel, Swap, Choose (and Delete, which these
+    // fake faces leave out).
+    let row = seen(cancel.1) + seen(swap.1) + seen(choose.1) + 2.0 * 24.0;
+    let left = ((OUT_W as f32 - row) / 2.0).round();
+    assert_eq!(at(cancel.0), [left, y, cancel.1 as f32, MOUTH_H]);
     assert_eq!(
         at(choose.0)[0],
         at(swap.0)[0] + seen(swap.1) + 24.0,
@@ -1416,15 +1481,17 @@ fn the_seated_chip_moves_to_the_socket_it_hopped_to() {
     let_it_hop(&mut app);
     let out = frame(&app);
 
-    let (x, y) = on_board(board_at(Canvas::FRAMED, 1.0), CHIP_U[1], CHIP_V);
+    let board = board_at(Canvas::FRAMED, 1.0);
+    let zoom = open_layout(Platform::Gba).zoom(board);
+    let (x, y) = on_board(board, CHIP_U[1], CHIP_V);
     let want = grown(
         Placed {
             x,
             y,
-            w: CHIP_W as f32,
-            h: CHIP_H as f32,
+            w: CHIP_W as f32 * zoom,
+            h: CHIP_H as f32 * zoom,
         },
-        TURN_PAD as f32,
+        TURN_PAD as f32 * zoom,
     );
     let (_, chip, _) = turned_at(&out, f.chips[1]).expect("the chip did not land in gpSP");
     assert!(
@@ -1448,8 +1515,8 @@ fn the_highlighted_cart_becomes_the_lid_rather_than_a_second_cart() {
     let standing = out
         .iter()
         .filter(|d| match **d {
-            Draw::Rect { w, .. } => (w - CART_W as f32).abs() < 0.01,
-            Draw::Tex { w, tex, .. } if tex != f.board => (w - CART_W as f32).abs() < 0.01,
+            Draw::Rect { w, .. } => (w - shelf_cart_w()).abs() < 0.01,
+            Draw::Tex { w, tex, .. } if tex != f.board => (w - shelf_cart_w()).abs() < 0.01,
             _ => false,
         })
         .count();
@@ -1461,7 +1528,7 @@ fn the_highlighted_cart_becomes_the_lid_rather_than_a_second_cart() {
     let (_, lid, turn) = turned_at(&out, f.lid).expect("no lid");
     let want = grown(
         lid_from(Canvas::FRAMED, shelf_cart_at(rest, 1.0), 0.0).0,
-        TURN_PAD as f32,
+        TURN_PAD as f32 * GBA_SHELF_ZOOM,
     );
     assert!(
         near(lid, [want.x, want.y, want.w, want.h]),
@@ -1474,12 +1541,15 @@ fn the_highlighted_cart_becomes_the_lid_rather_than_a_second_cart() {
     let (_, lid, turn) = turned_at(&slid, f.lid).expect("the lid vanished mid-slide");
     assert_eq!(turn, 0.0, "the lid turned while it slid");
     let shelf = shelf_cart_at(rest, 1.0);
+    // The lid rests below the shelf cart's top, so it slides the whole way up before it swings
+    // down to rest.
+    assert!(lid_at(Canvas::FRAMED, 1.0).0.y > shelf.y);
     let want = grown(
         Placed {
             y: shelf.y - SLIDE_UP * 0.5,
             ..shelf
         },
-        TURN_PAD as f32,
+        TURN_PAD as f32 * GBA_SHELF_ZOOM,
     );
     assert!(
         near(lid, [want.x, want.y, want.w, want.h]),
@@ -1506,18 +1576,27 @@ fn the_highlighted_cart_becomes_the_lid_rather_than_a_second_cart() {
         turn < 0.0 && turn > LID_TURN,
         "the lid is not turning: {turn}"
     );
+    let lid_rest = lid_at(Canvas::FRAMED, 1.0).0;
     assert!(
-        lid[1] < lid_at(Canvas::FRAMED, 0.0).0.y && lid[1] > lid_at(Canvas::FRAMED, 1.0).0.y,
-        "the lid is not on its way up: {lid:?}"
+        lid[1] > shelf.y - SLIDE_UP && lid[1] < lid_rest.y,
+        "the lid is not on its way down to rest: {lid:?}"
+    );
+    assert!(
+        lid[0] < shelf.x && lid[0] > lid_rest.x,
+        "the lid is not on its way left: {lid:?}"
     );
     let (_, [bx, by, bw, bh]) = tex_at(&lifting, f.board).expect("no board mid-lift");
     let (start, rest) = (board_at(Canvas::FRAMED, 0.0), board_at(Canvas::FRAMED, 1.0));
-    assert_eq!(
-        (bw, bh),
-        (start.w, start.h),
-        "the board changed size mid-lift: {bw}x{bh}"
+    assert!(
+        (bw - start.w).abs() < 0.01
+            && (bh - start.h).abs() < 0.01
+            && (rest.w - start.w).abs() < 0.01,
+        "the board does not keep the shelf cart's size: {bw}x{bh}"
     );
-    assert_eq!(bx, start.x, "the board slid sideways on the way down: {bx}");
+    assert!(
+        bx > start.x && bx < rest.x,
+        "the board is not on its way right of the lid: {bx}"
+    );
     assert!(
         by > start.y && by < rest.y,
         "the board is not on its way down: {by}"
@@ -1618,17 +1697,19 @@ fn closing_puts_the_cart_back_on_the_shelf() {
         "the lid is not turning level: {turn}"
     );
     assert!(
-        lid[1] > lid_at(Canvas::FRAMED, 1.0).0.y,
-        "the lid is not coming back down"
+        lid[1] < lid_at(Canvas::FRAMED, 1.0).0.y,
+        "the lid is not rising back to the shelf"
     );
     let (_, [bx, by, bw, bh]) = tex_at(&partway, f.board).expect("the board vanished mid-close");
     let (start, rest) = (board_at(Canvas::FRAMED, 0.0), board_at(Canvas::FRAMED, 1.0));
-    assert_eq!(
-        (bw, bh),
-        (start.w, start.h),
-        "the board changed size mid-close: {bw}x{bh}"
+    assert!(
+        (bw - start.w).abs() < 0.01 && (bh - start.h).abs() < 0.01,
+        "the board does not keep the shelf cart's size on the way back: {bw}x{bh}"
     );
-    assert_eq!(bx, start.x, "the board slid sideways on the way back: {bx}");
+    assert!(
+        bx < rest.x && bx > start.x,
+        "the board is not on its way back left: {bx}"
+    );
     assert!(
         by < rest.y && by > start.y,
         "the board is not on its way back up: {by}"
@@ -1666,7 +1747,7 @@ fn closing_puts_the_cart_back_on_the_shelf() {
         .iter()
         .filter(|d| {
             matches!(**d, Draw::Rect { w, .. } | Draw::Tex { w, .. }
-                if (w - CART_W as f32).abs() < 0.01)
+                if (w - shelf_cart_w()).abs() < 0.01)
         })
         .count();
     assert_eq!(standing, 1, "the cart did not go back on the shelf");
@@ -1684,7 +1765,7 @@ fn the_open_waits_on_the_shelf_for_its_faces() {
     app.set_core_board_faces(f.board, f.lid);
     app.update(0.016);
     let out = frame(&app);
-    let shelf = grown(shelf_cart_at(rest, 1.0), TURN_PAD as f32);
+    let shelf = grown(shelf_cart_at(rest, 1.0), TURN_PAD as f32 * GBA_SHELF_ZOOM);
     let (_, lid, _) = turned_at(&out, f.lid).expect("no lid once the faces arrived");
     assert!(
         near(lid, [shelf.x, shelf.y, shelf.w, shelf.h]),
@@ -1880,6 +1961,9 @@ fn a_shoulder_held_across_the_insert_does_not_stick_on_the_pad() {
     let d = common::tmp_root_with_gb_carts(&["Tetris", "Zzz"]);
     common::clocked(d.path());
     let mut s = Session::boot(d.path().to_path_buf());
+    // Extras stands beside the shelf, so the thumb steps off to it and comes back holding L.
+    s.feed([RawEvent::Down(Btn::R1)], 8);
+    s.feed([RawEvent::Up(Btn::R1)], 12);
     s.feed([RawEvent::Down(Btn::L1)], 16);
     s.feed([RawEvent::Down(Btn::A)], 32);
     s.feed([RawEvent::Up(Btn::A)], 48);
@@ -1913,6 +1997,9 @@ fn a_shoulder_still_held_when_the_cart_seats_never_reaches_a_game_boy_core() {
     ] {
         common::clocked(root.path());
         let mut s = Session::boot(root.path().to_path_buf());
+        // Extras stands beside the shelf, so the thumb steps off to it and comes back holding L.
+        s.feed([RawEvent::Down(Btn::R1)], 8);
+        s.feed([RawEvent::Up(Btn::R1)], 12);
         s.feed([RawEvent::Down(Btn::L1)], 16);
         s.feed([RawEvent::Down(Btn::A)], 32);
         s.feed([RawEvent::Up(Btn::A)], 48);
@@ -2186,9 +2273,9 @@ fn a_letter_jump_shows_the_letter_in_the_slot_and_fades_like_the_shelf_name() {
     let mut a = app_with_carts(&["Alpha", "Bravo"]);
     let face = slot_ui::TexId::from_raw(77);
     assert_eq!(
-        a.slot_text(),
-        None,
-        "a one shelf card printed something in the slot"
+        a.slot_text().as_deref(),
+        Some("Game Boy Advance"),
+        "before any jump the slot printed something other than the shelf's name"
     );
 
     a.apply(Action::GbaDown(Btn::Down));
@@ -2290,4 +2377,256 @@ fn the_shader_shortcut_does_nothing_in_the_save_state_switcher() {
     a.apply(Action::ShaderPrev);
     assert_eq!(slot_store::read_slot_state(d.path()).shader_gba, before);
     assert_eq!(a.toast(), None);
+}
+
+fn on_shelf_with_folder() -> (tempfile::TempDir, App) {
+    let d = common::tmp_root_with_carts(&["Advance Wars", "Zelda"]);
+    let folder = d.path().join("Games/GBA/RPGs");
+    std::fs::create_dir(&folder).unwrap();
+    for stem in ["Golden Sun", "Fire Emblem"] {
+        std::fs::write(folder.join(format!("{stem}.gba")), vec![0u8; 0x100]).unwrap();
+    }
+    booted_on_shelf(d)
+}
+
+fn press(app: &mut App, b: Btn) {
+    app.apply(Action::GbaDown(b));
+    app.apply(Action::GbaUp(b));
+    app.update(0.5);
+}
+
+#[test]
+fn a_folder_stands_first_on_its_platforms_shelf_as_one_entry() {
+    let (_d, mut app) = on_shelf_with_folder();
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        seen.push(app.selected_stem().unwrap().to_string());
+        press(&mut app, Btn::Right);
+    }
+    assert_eq!(
+        seen,
+        ["RPGs", "Advance Wars", "Zelda"],
+        "a folder is not first on its shelf"
+    );
+    assert!(
+        app.carts().all(|c| c.stem != "RPGs"),
+        "the folder counted as a game"
+    );
+    assert_eq!(
+        app.carts().filter(|c| c.folder() == Some("RPGs")).count(),
+        2,
+        "the folder's games are missing from the library"
+    );
+}
+
+#[test]
+fn a_opens_a_folder_onto_its_games_and_b_puts_it_back() {
+    let (_d, mut app) = on_shelf_with_folder();
+    assert_eq!(app.selected_stem(), Some("RPGs"));
+    press(&mut app, Btn::A);
+    app.update(1.0);
+    assert_eq!(app.selected_stem(), Some("Fire Emblem"));
+    assert!(
+        matches!(app.phase(), slot::app::Phase::Shelf),
+        "A on a folder put something in the slot"
+    );
+    press(&mut app, Btn::Right);
+    assert_eq!(app.selected_stem(), Some("Golden Sun"));
+    press(&mut app, Btn::B);
+    app.update(1.0);
+    assert_eq!(
+        app.selected_stem(),
+        Some("RPGs"),
+        "B did not close the folder"
+    );
+    press(&mut app, Btn::A);
+    app.apply(Action::GbaDown(Btn::B));
+    app.update(1.2);
+    assert_eq!(
+        app.selected_stem(),
+        Some("Fire Emblem"),
+        "a press while the folder was still opening was taken"
+    );
+}
+
+#[test]
+fn start_and_favourite_leave_a_closed_folder_alone() {
+    let (_d, mut app) = on_shelf_with_folder();
+    app.apply(Action::GbaDown(Btn::Start));
+    app.update(0.5);
+    assert!(
+        app.core_picker().is_none(),
+        "a folder opened the core picker"
+    );
+    app.apply(Action::Favorite);
+    assert!(app.carts().all(|c| c.stem != "RPGs"));
+}
+
+#[test]
+fn start_on_a_folder_opens_its_menu_and_rename_renames_it_on_the_card() {
+    let (d, mut app) = on_shelf_with_folder();
+    press(&mut app, Btn::Start);
+    assert!(
+        app.core_picker().is_none(),
+        "START on a folder opened the core picker"
+    );
+    press(&mut app, Btn::A);
+    for _ in 0.."RPGs".len() {
+        press(&mut app, Btn::B);
+    }
+    press(&mut app, Btn::A);
+    press(&mut app, Btn::Start);
+    press(&mut app, Btn::A);
+    press(&mut app, Btn::B);
+    app.update(1.0);
+    assert!(
+        d.path().join("Games/GBA/A/Golden Sun.gba").is_file(),
+        "the folder was not renamed"
+    );
+    assert!(!d.path().join("Games/GBA/RPGs").exists());
+    assert_eq!(app.selected_stem(), Some("A"));
+    press(&mut app, Btn::A);
+    app.update(1.0);
+    assert_eq!(
+        app.selected_stem(),
+        Some("Fire Emblem"),
+        "the renamed folder does not open onto its games"
+    );
+}
+
+#[test]
+fn a_folder_sorted_by_recent_puts_the_last_game_played_first() {
+    let (d, _) = on_shelf_with_folder();
+    std::fs::write(
+        d.path().join("Config/folders.txt"),
+        "GBA/RPGs.sort = recent\n",
+    )
+    .unwrap();
+    let mut state = slot_store::read_slot_state(d.path());
+    state.recents = vec![slot_store::Recent {
+        platform: Platform::Gba,
+        stem: "Golden Sun".into(),
+    }];
+    write_slot_state(d.path(), &state).unwrap();
+    let mut app = App::boot(d.path());
+    app.update(0.5);
+    while app.selected_stem() != Some("RPGs") {
+        press(&mut app, Btn::Right);
+    }
+    press(&mut app, Btn::A);
+    app.update(1.0);
+    assert_eq!(app.selected_stem(), Some("Golden Sun"));
+}
+
+#[test]
+fn the_next_start_comes_back_to_the_cart_the_shelf_rested_on() {
+    let (d, mut app) = on_shelf_with_folder();
+    press(&mut app, Btn::Right);
+    press(&mut app, Btn::Right);
+    assert_eq!(app.selected_stem(), Some("Zelda"));
+    app.update(2.5);
+    assert_eq!(
+        App::boot(d.path()).selected_stem(),
+        Some("Zelda"),
+        "lost on a start without a power off"
+    );
+
+    press(&mut app, Btn::Left);
+    press(&mut app, Btn::Left);
+    press(&mut app, Btn::A);
+    app.update(1.0);
+    press(&mut app, Btn::Right);
+    assert_eq!(app.selected_stem(), Some("Golden Sun"));
+    app.update(0.5);
+    assert_eq!(
+        App::boot(d.path()).selected_stem(),
+        Some("Zelda"),
+        "a cart passed over was saved"
+    );
+    app.update(2.5);
+    let mut next = App::boot(d.path());
+    assert_eq!(
+        next.selected_stem(),
+        Some("Golden Sun"),
+        "the folder's cart was not remembered"
+    );
+    press(&mut next, Btn::B);
+    next.update(1.0);
+    assert_eq!(
+        next.selected_stem(),
+        Some("RPGs"),
+        "the start inside a folder did not know its way out"
+    );
+}
+
+#[test]
+fn removing_the_last_favourite_lands_on_that_game_on_its_own_shelf() {
+    let (_d, mut app) = on_shelf(&["Alpha", "Bravo", "Charlie", "Delta"]);
+    press(&mut app, Btn::Right);
+    app.apply(Action::Favorite);
+    app.update(0.5);
+    press(&mut app, Btn::Right);
+    press(&mut app, Btn::Right);
+    assert_eq!(app.selected_stem(), Some("Delta"));
+    while app.shelf_platform_name() != Some("Favorites") {
+        app.apply(Action::PreviousShelf);
+        app.update(0.5);
+    }
+    app.apply(Action::Favorite);
+    app.update(0.5);
+    assert_eq!(
+        app.selected_stem(),
+        Some("Bravo"),
+        "the shelf the last favourite left for was not standing on it"
+    );
+    press(&mut app, Btn::Right);
+    assert_eq!(
+        app.selected_stem(),
+        Some("Charlie"),
+        "the game was not left standing on its own shelf"
+    );
+}
+
+#[test]
+fn the_favourite_button_says_whether_it_added_or_removed() {
+    let (_d, mut app) = on_shelf(&["Alpha", "Bravo"]);
+    app.apply(Action::Favorite);
+    assert_eq!(app.toast(), Some(slot_ui::Toast::FavoriteAdded));
+    app.update(3.0);
+    app.apply(Action::Favorite);
+    assert_eq!(app.toast(), Some(slot_ui::Toast::FavoriteRemoved));
+}
+
+#[test]
+fn play_time_is_written_while_a_game_runs_and_not_on_the_shelf() {
+    let (d, mut app) = on_shelf(&["Emerald", "Zzz"]);
+    for _ in 0..30 {
+        app.update(1.0);
+    }
+    app.apply(Action::Insert);
+    app.on_core_ready();
+    for _ in 0..120 {
+        app.update(1.0 / 60.0);
+    }
+    assert!(matches!(app.phase(), Phase::Playing { .. }));
+    for _ in 0..90 {
+        app.update(1.0);
+    }
+    assert!(
+        matches!(app.phase(), Phase::Playing { .. }),
+        "left play: {:?}",
+        app.phase()
+    );
+    assert!(app.seated_cart().is_some(), "no seated cart");
+    app.apply(Action::Eject);
+    app.update(1.0);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let sessions = slot_store::read_activity(d.path());
+    let total: u32 = sessions.iter().map(|s| s.secs).sum();
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    assert_eq!(sessions[0].game.stem, "Emerald");
+    assert!(
+        (89..=93).contains(&total),
+        "the shelf time or the insert counted: {total} s"
+    );
 }

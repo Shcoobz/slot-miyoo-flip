@@ -156,11 +156,17 @@ pub struct Hud {
     toasts: Vec<TexId>,
     link: LinkBadge,
     link_faces: Vec<TexId>,
+    /// "0%" to "100%", with their sizes, printed beside the brightness and volume bars.
+    percents: Vec<(TexId, u32, u32)>,
 }
 
 impl Hud {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_percent_faces(&mut self, faces: Vec<(TexId, u32, u32)>) {
+        self.percents = faces;
     }
 
     pub fn set_icons(&mut self, icons: Vec<TexId>) {
@@ -310,6 +316,26 @@ impl Hud {
             h: BAR_H,
             colour: faded(FILL, alpha),
         });
+        if let Some(&(tex, w, h)) = self.percent_face() {
+            out.push(Draw::Tex {
+                x: x + BAR_W + ICON_GAP,
+                y: (PLATE_H - h as f32) / 2.0,
+                w: w as f32,
+                h: h as f32,
+                tex,
+                alpha,
+            });
+        }
+    }
+
+    /// The brightness or volume as a share of its top, rounded to a whole percent.
+    pub fn percent(&self) -> Option<u8> {
+        matches!(self.kind, HudKind::Brightness | HudKind::Volume)
+            .then(|| (self.fraction() * 100.0).round() as u8)
+    }
+
+    fn percent_face(&self) -> Option<&(TexId, u32, u32)> {
+        self.percents.get(usize::from(self.percent()?))
     }
 
     fn place_badge(&self, canvas: Canvas, tex: TexId, out: &mut Vec<Draw>) {

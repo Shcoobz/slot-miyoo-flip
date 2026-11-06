@@ -11,9 +11,15 @@ pub const VOLUME_MAX: u8 = 100;
 pub const UTC_OFFSET_MIN: i16 = -720;
 pub const UTC_OFFSET_MAX: i16 = 840;
 
-pub const FF_SPEEDS: [u8; 4] = [2, 3, 4, 6];
+pub const FF_SPEEDS: [u8; 5] = [2, 3, 4, 6, 8];
 
 pub const LID_OFF_MIN: [u8; 6] = [1, 3, 5, 10, 15, 30];
+/// Idle minutes before slot dozes by itself; 0 is off.
+pub const AUTO_SLEEP_MIN: [u8; 5] = [0, 1, 3, 5, 10];
+/// Idle seconds before slot lowers the backlight to its dimmest lit step; 0 is off.
+pub const DIM_SCREEN_S: [u16; 5] = [0, 15, 30, 60, 120];
+/// How many recent games the Game Switcher may list.
+pub const SWITCHER_GAMES: [u8; 3] = [3, 5, 10];
 
 pub const FF_SPEED_DEFAULT: u8 = 6;
 
@@ -225,6 +231,9 @@ pub struct SlotState {
     pub show_titles: bool,
     pub left_stick_dpad: bool,
     pub lid_off_min: Option<u8>,
+    pub auto_sleep_min: u8,
+    pub dim_screen_s: u16,
+    pub switcher_games: u8,
     pub bezel_gba: BezelPick,
     pub bezel_gb: BezelPick,
     pub bezel_gbc: BezelPick,
@@ -365,6 +374,9 @@ impl Default for SlotState {
             show_titles: false,
             left_stick_dpad: true,
             lid_off_min: None,
+            auto_sleep_min: 0,
+            dim_screen_s: 0,
+            switcher_games: 10,
             bezel_gba: BezelPick::Ags102,
             bezel_gb: BezelPick::Ags102,
             bezel_gbc: BezelPick::Ags102,
@@ -462,6 +474,9 @@ pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
     if let Some(min) = s.lid_off_min {
         text.push_str(&format!("lid_off_min={min}\n"));
     }
+    text.push_str(&format!("auto_sleep_min={}\n", s.auto_sleep_min));
+    text.push_str(&format!("dim_screen_s={}\n", s.dim_screen_s));
+    text.push_str(&format!("switcher_games={}\n", s.switcher_games));
     text.push_str(&format!("bezel_gba={}\n", s.bezel_gba.key()));
     text.push_str(&format!("bezel_gb={}\n", s.bezel_gb.key()));
     text.push_str(&format!("bezel_gbc={}\n", s.bezel_gbc.key()));
@@ -512,6 +527,9 @@ fn parse(text: &str) -> Option<SlotState> {
     let mut show_titles = None;
     let mut left_stick_dpad = None;
     let mut lid_off_min = None;
+    let mut auto_sleep_min = None;
+    let mut dim_screen_s = None;
+    let mut switcher_games = None;
     let mut bezel_gba = None;
     let mut bezel_gb = None;
     let mut bezel_gbc = None;
@@ -552,6 +570,15 @@ fn parse(text: &str) -> Option<SlotState> {
             "show_titles" => show_titles = flag(value),
             "left_stick_dpad" => left_stick_dpad = flag(value),
             "lid_off_min" => lid_off_min = value.parse().ok().filter(|m| LID_OFF_MIN.contains(m)),
+            "switcher_games" => {
+                switcher_games = value.parse().ok().filter(|n| SWITCHER_GAMES.contains(n))
+            }
+            "auto_sleep_min" => {
+                auto_sleep_min = value.parse().ok().filter(|m| AUTO_SLEEP_MIN.contains(m))
+            }
+            "dim_screen_s" => {
+                dim_screen_s = value.parse().ok().filter(|s| DIM_SCREEN_S.contains(s))
+            }
             "bezel_gba" => bezel_gba = Some(BezelPick::parse(value)),
             "bezel_gb" => bezel_gb = Some(BezelPick::parse(value)),
             "bezel_gbc" => bezel_gbc = Some(BezelPick::parse(value)),
@@ -603,6 +630,9 @@ fn parse(text: &str) -> Option<SlotState> {
         show_titles: show_titles.unwrap_or(fallback.show_titles),
         left_stick_dpad: left_stick_dpad.unwrap_or(fallback.left_stick_dpad),
         lid_off_min,
+        auto_sleep_min: auto_sleep_min.unwrap_or(fallback.auto_sleep_min),
+        dim_screen_s: dim_screen_s.unwrap_or(fallback.dim_screen_s),
+        switcher_games: switcher_games.unwrap_or(fallback.switcher_games),
         bezel_gba: bezel_gba.unwrap_or(fallback.bezel_gba),
         bezel_gb: bezel_gb.unwrap_or(fallback.bezel_gb),
         bezel_gbc: bezel_gbc.unwrap_or(fallback.bezel_gbc),

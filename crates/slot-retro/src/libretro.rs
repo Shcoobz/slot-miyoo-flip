@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use libloading::Library;
 
-use crate::core::{AvInfo, ButtonMask, CoreError, RetroCore, GBA_H, GBA_W};
+use crate::core::{
+    AvInfo, ButtonMask, CoreError, RetroCore, GBA_H, GBA_W, MAX_FRAME_H, MAX_FRAME_W,
+};
 use crate::ffi::*;
 use crate::link::Link;
 use crate::rumble::Rumble;
@@ -20,10 +22,13 @@ static LIVE: AtomicBool = AtomicBool::new(false);
 enum PixelFormat {
     Xrgb8888,
     Rgb565,
+    Rgb1555,
 }
 
 struct Host {
     video: Vec<u8>,
+    /// The width and height `video` holds: 240x160 for a picture that fits it, else the core's.
+    video_size: (u32, u32),
     format: PixelFormat,
     audio: Vec<i16>,
     inputs: [u16; 2],
@@ -89,6 +94,7 @@ unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
             let want = match *(data as *const c_uint) {
                 PIXEL_FORMAT_XRGB8888 => PixelFormat::Xrgb8888,
                 PIXEL_FORMAT_RGB565 => PixelFormat::Rgb565,
+                PIXEL_FORMAT_0RGB1555 => PixelFormat::Rgb1555,
                 _ => return false,
             };
             with_host(|h| h.format = want).is_some()
@@ -186,6 +192,16 @@ unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
                 (*(data as *mut RumbleInterface)).set_rumble_state = set_rumble_state;
             })
             .is_some()
+        }
+        GET_SENSOR_INTERFACE => {
+            if data.is_null() {
+                return false;
+            }
+            *(data as *mut SensorInterface) = SensorInterface {
+                set_sensor_state: crate::sensor::set_sensor_state,
+                get_sensor_input: crate::sensor::get_sensor_input,
+            };
+            true
         }
         GET_LOG_INTERFACE => {
             if data.is_null() {
@@ -308,26 +324,42 @@ unsafe fn report_audio_status(skip: bool) {
     status(true, if skip { 0 } else { 100 }, skip);
 }
 
+/// Where a frame of `width`x`height` lands: the buffer's size, and the picture's offset in it.
+/// A picture that fits the GBA's 240x160 is centred in it, as the Game Boy always was; a bigger
+/// one (NES, SNES) is kept at its own size, up to `MAX_FRAME_W`x`MAX_FRAME_H`.
+fn frame_layout(width: u32, height: u32) -> ((u32, u32), (u32, u32), (u32, u32)) {
+    if width <= GBA_W && height <= GBA_H {
+        let at = ((GBA_W - width) / 2, (GBA_H - height) / 2);
+        return ((GBA_W, GBA_H), at, (width, height));
+    }
+    let shown = (width.min(MAX_FRAME_W), height.min(MAX_FRAME_H));
+    (shown, (0, 0), shown)
+}
+
 unsafe extern "C" fn video_refresh(
     data: *const c_void,
     width: c_uint,
     height: c_uint,
     pitch: usize,
 ) {
-    if data.is_null() {
+    if data.is_null() || width == 0 || height == 0 {
         return;
     }
     with_host(|h| {
-        let cols = width.min(GBA_W) as usize;
-        let rows = height.min(GBA_H) as usize;
-        let ox = (GBA_W as usize - cols) / 2;
-        let oy = (GBA_H as usize - rows) / 2;
-        if cols != GBA_W as usize || rows != GBA_H as usize {
+        let ((bw, bh), (ox, oy), (cols, rows)) = frame_layout(width, height);
+        let (bw, ox, oy) = (bw as usize, ox as usize, oy as usize);
+        let (cols, rows) = (cols as usize, rows as usize);
+        let bytes = bw * bh as usize * 4;
+        if h.video.len() != bytes {
+            h.video.resize(bytes, 0);
+        }
+        h.video_size = (bw as u32, bh);
+        if cols != bw || rows != bh as usize {
             h.video.fill(0);
         }
         for y in 0..rows {
             let src = (data as *const u8).add(y * pitch);
-            let row = ((y + oy) * GBA_W as usize + ox) * 4;
+            let row = ((y + oy) * bw + ox) * 4;
             match h.format {
                 PixelFormat::Xrgb8888 => {
                     ptr::copy_nonoverlapping(src, h.video.as_mut_ptr().add(row), cols * 4);
@@ -341,6 +373,19 @@ unsafe extern "C" fn video_refresh(
                         let o = row + x * 4;
                         h.video[o] = (b << 3) | (b >> 2);
                         h.video[o + 1] = (g << 2) | (g >> 4);
+                        h.video[o + 2] = (r << 3) | (r >> 2);
+                        h.video[o + 3] = 0;
+                    }
+                }
+                PixelFormat::Rgb1555 => {
+                    for x in 0..cols {
+                        let p = ptr::read_unaligned((src as *const u16).add(x));
+                        let r = ((p >> 10) & 0x1f) as u8;
+                        let g = ((p >> 5) & 0x1f) as u8;
+                        let b = (p & 0x1f) as u8;
+                        let o = row + x * 4;
+                        h.video[o] = (b << 3) | (b >> 2);
+                        h.video[o + 1] = (g << 3) | (g >> 2);
                         h.video[o + 2] = (r << 3) | (r >> 2);
                         h.video[o + 3] = 0;
                     }
@@ -390,7 +435,8 @@ pub struct LibretroCore {
     rom_path: Option<CString>,
     av: AvInfo,
     loaded: bool,
-    state_size: Option<usize>,
+    /// The state size the core gave, and the save chip size it gave it at.
+    state_size: Option<(usize, usize)>,
     _lib: Library,
 }
 
@@ -471,6 +517,7 @@ impl LibretroCore {
         }
         let mut host = Box::new(Host {
             video: vec![0; VIDEO_BYTES],
+            video_size: (GBA_W, GBA_H),
             format: PixelFormat::Xrgb8888,
             audio: Vec::new(),
             inputs: [0; 2],
@@ -616,8 +663,28 @@ impl RetroCore for LibretroCore {
         unsafe { report_audio_status(skip) };
     }
 
+    fn set_cheats(&mut self, cheats: &[(u32, String)]) {
+        let (true, Some(reset), Some(set)) =
+            (self.loaded, self.api.cheat_reset, self.api.cheat_set)
+        else {
+            return;
+        };
+        let _a = Active::bind(&mut self.host);
+        unsafe { reset() };
+        for (index, code) in cheats {
+            let Ok(code) = CString::new(code.as_str()) else {
+                continue;
+            };
+            unsafe { set(*index, true, code.as_ptr()) };
+        }
+    }
+
     fn video_xrgb8888(&self) -> &[u8] {
         &self.host.video
+    }
+
+    fn video_size(&self) -> (u32, u32) {
+        self.host.video_size
     }
 
     fn take_audio(&mut self) -> Vec<i16> {
@@ -625,11 +692,20 @@ impl RetroCore for LibretroCore {
     }
 
     fn serialize(&mut self) -> Result<Vec<u8>, CoreError> {
-        if let Some(buf) = self.state_size.and_then(|size| self.serialize_at(size)) {
+        // A state carries the save chip, and mGBA only settles on a chip once the game touches
+        // it, a few frames in: a size asked before then is the undetected chip's, too big for
+        // the rest of the game. So ask again when the chip changes. A state that grew without
+        // the chip changing is refused at the old size and asked for again below.
+        let chip = unsafe { (self.api.get_memory_size)(MEMORY_SAVE_RAM) };
+        if let Some(buf) = self
+            .state_size
+            .filter(|&(_, at)| at == chip)
+            .and_then(|(size, _)| self.serialize_at(size))
+        {
             return Ok(buf);
         }
         let size = unsafe { (self.api.serialize_size)() };
-        self.state_size = (size > 0).then_some(size);
+        self.state_size = (size > 0).then_some((size, chip));
         if size == 0 {
             return Err(CoreError::State("core reports no state".into()));
         }
@@ -709,6 +785,7 @@ mod tests {
     fn host_with(options: HashMap<String, CString>, options_dirty: bool) -> Box<Host> {
         Box::new(Host {
             video: vec![0; VIDEO_BYTES],
+            video_size: (GBA_W, GBA_H),
             format: PixelFormat::Xrgb8888,
             audio: Vec::new(),
             inputs: [0; 2],
@@ -1713,5 +1790,82 @@ mod tests {
             &[100u8, 50, 100 ^ 50],
             "the picture was blanked or moved where a duplicate should have kept it"
         );
+    }
+
+    #[test]
+    fn a_game_boy_picture_keeps_the_gba_sized_frame() {
+        let mut host = host_with(HashMap::new(), false);
+        let _active = Active::bind(&mut host);
+        let frame = gradient(160, 144);
+        unsafe { video_refresh(frame.as_ptr() as *const c_void, 160, 144, 160 * 4) };
+
+        let (size, len) = unsafe { with_host(|h| (h.video_size, h.video.len())) }.unwrap();
+        assert_eq!(size, (GBA_W, GBA_H));
+        assert_eq!(len, (GBA_W * GBA_H * 4) as usize);
+    }
+
+    #[test]
+    fn a_nes_picture_is_kept_at_its_own_size() {
+        let mut host = host_with(HashMap::new(), false);
+        let _active = Active::bind(&mut host);
+        let frame = gradient(256, 240);
+        unsafe { video_refresh(frame.as_ptr() as *const c_void, 256, 240, 256 * 4) };
+
+        let (size, video) = unsafe { with_host(|h| (h.video_size, h.video.clone())) }.unwrap();
+        assert_eq!(size, (256, 240));
+        assert_eq!(video, frame, "the NES picture was moved or cut");
+    }
+
+    #[test]
+    fn a_padded_rgb565_snes_picture_is_packed_at_its_own_size() {
+        let mut host = host_with(HashMap::new(), false);
+        host.format = PixelFormat::Rgb565;
+        let _active = Active::bind(&mut host);
+        // Snes9x hands 512-pixel rows (1024 bytes) even for a 256-wide picture.
+        let pitch = 1024;
+        let mut frame = vec![0u8; pitch * 224];
+        let white = 0xffffu16.to_le_bytes();
+        let last = (223 * pitch) + 255 * 2;
+        frame[last..last + 2].copy_from_slice(&white);
+        unsafe { video_refresh(frame.as_ptr() as *const c_void, 256, 224, pitch) };
+
+        let (size, video) = unsafe { with_host(|h| (h.video_size, h.video.clone())) }.unwrap();
+        assert_eq!(size, (256, 224));
+        assert_eq!(video.len(), 256 * 224 * 4);
+        let o = (223 * 256 + 255) * 4;
+        assert_eq!(&video[o..o + 3], &[255, 255, 255]);
+        assert_eq!(&video[o - 4..o - 1], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn a_snes_hi_res_frame_changes_the_size_and_back() {
+        let mut host = host_with(HashMap::new(), false);
+        let _active = Active::bind(&mut host);
+        unsafe {
+            let lo = gradient(256, 224);
+            video_refresh(lo.as_ptr() as *const c_void, 256, 224, 256 * 4);
+            let hi = gradient(512, 448);
+            video_refresh(hi.as_ptr() as *const c_void, 512, 448, 512 * 4);
+            assert_eq!(with_host(|h| h.video_size).unwrap(), (512, 448));
+            assert_eq!(with_host(|h| h.video.clone()).unwrap(), hi);
+            video_refresh(lo.as_ptr() as *const c_void, 256, 224, 256 * 4);
+            assert_eq!(with_host(|h| h.video_size).unwrap(), (256, 224));
+            assert_eq!(with_host(|h| h.video.clone()).unwrap(), lo);
+        }
+    }
+
+    #[test]
+    fn a_0rgb1555_pixel_is_widened_to_xrgb8888() {
+        let mut host = host_with(HashMap::new(), false);
+        let _active = Active::bind(&mut host);
+        let format = PIXEL_FORMAT_0RGB1555;
+        assert!(unsafe { environment(SET_PIXEL_FORMAT, &format as *const c_uint as *mut c_void) });
+        // Pure red in 0RGB1555, then a full-size frame of it.
+        let px = (0x1fu16 << 10).to_le_bytes();
+        let frame: Vec<u8> = px.iter().copied().cycle().take(256 * 240 * 2).collect();
+        unsafe { video_refresh(frame.as_ptr() as *const c_void, 256, 240, 256 * 2) };
+
+        let video = unsafe { with_host(|h| h.video.clone()) }.unwrap();
+        assert_eq!(&video[..4], &[0, 0, 255, 0]);
     }
 }

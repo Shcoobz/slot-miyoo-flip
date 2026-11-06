@@ -90,12 +90,30 @@ fn b_climbs_the_in_game_pages_and_never_the_shelf_ones() {
 #[test]
 fn screen_shows_the_palette_only_when_palettes_are_live() {
     let (_d, mut a) = playing();
+    // The NES/SNES core rows (no alternative cores on this card) and the SNES X/Y are hidden
+    // on a GBA game too.
+    let rest = [
+        QuickRow::NesCore,
+        QuickRow::SnesCore,
+        QuickRow::GameX,
+        QuickRow::GameY,
+        QuickRow::LeftStick,
+    ];
+    let with = |first: &[QuickRow]| [first, &rest[..]].concat();
     assert_eq!(
         a.in_game_hidden(),
-        &[QuickRow::Palette, QuickRow::Bezel, QuickRow::LeftStick]
+        with(&[
+            QuickRow::Palette,
+            QuickRow::Bezel,
+            QuickRow::Picture,
+            QuickRow::Cheats
+        ])
     );
     a.set_palette_live(true);
-    assert_eq!(a.in_game_hidden(), &[QuickRow::Bezel, QuickRow::LeftStick]);
+    assert_eq!(
+        a.in_game_hidden(),
+        with(&[QuickRow::Bezel, QuickRow::Picture, QuickRow::Cheats])
+    );
 }
 
 #[test]
@@ -380,7 +398,7 @@ const CART: TexId = TexId::from_raw(77);
 const OUT_H_F: f32 = slot_ui::OUT_H as f32;
 
 fn paint_carts(a: &mut App) {
-    for shelf in 0..6 {
+    for shelf in 0..8 {
         for index in 0..8 {
             a.set_cart_face(shelf, index, CART);
         }

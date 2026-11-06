@@ -8,6 +8,7 @@ Make it your screen size:
   RG SP          720 x 480
   RG34XX         720 x 480
   RG34XXSP       720 x 480
+  Miyoo Flip     640 x 480
   RG35XXSP       640 x 480
   RG35XX Plus    640 x 480
   RG35XX-H       640 x 480

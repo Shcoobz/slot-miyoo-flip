@@ -16,7 +16,7 @@ use slot_ui::{
     slot_back_light, slot_front, slot_front_light, socket_face, sticker_face, title_face,
     toast_face, wallpaper_face, word_ink, CartFace, GbShell, Icon, LinkBadge, PowerChoice,
     QuickMenuFaces, QuickRow, QuickValue, RebuildScreen, StickerFields, Toast, UndoFace, ALERT_PX,
-    BOLT_PX, HUD_ICON_PX, HUD_INK, LEGEND,
+    BOLT_PX, GAMES_LEGEND, HUD_ICON_PX, HUD_INK, LEGEND,
 };
 
 use crate::app::{App, LinkRow, Phase};
@@ -33,11 +33,33 @@ const DOZE_TIMEOUT: Duration = Duration::from_secs(180);
 
 const ALERT_INK: [u8; 3] = [0xf0, 0xb4, 0x3c];
 
+/// Everything a frame shows besides its texture contents: when it matches the frame on the panel
+/// and no texture changed, the panel already shows it and the frame need not be drawn.
+#[derive(PartialEq)]
+struct Shown {
+    draws: Vec<Draw>,
+    window: (u32, u32),
+    uploads: u64,
+    blue_light: u8,
+    dim: f32,
+    picture: [f32; 4],
+    shader: slot_store::Shader,
+    shake: f32,
+    power: f32,
+    footer: f32,
+    source: [f32; 4],
+    bezel: Option<TexId>,
+    sp_frame: bool,
+    tall: Option<f32>,
+    tv: Option<slot_gfx::TvFit>,
+}
+
 pub struct Frontend {
     session: Session,
     start: Instant,
     last: Instant,
     draws: Vec<Draw>,
+    shown: Option<Shown>,
     polaroid_texes: Vec<TexId>,
     title_tex: Option<TexId>,
     faces: FaceBuilder,
@@ -63,6 +85,7 @@ pub struct Frontend {
     link_shot: Option<TexId>,
     link_shot_size: (u32, u32),
     link_shot_shown: bool,
+    game_upload: crate::frames::LastUpload,
 }
 
 #[derive(Default)]
@@ -90,7 +113,7 @@ struct QuickPalette {
 #[derive(Default)]
 struct BezelSync {
     tex: Option<TexId>,
-    image: Option<(Console, BezelPick, (u32, u32))>,
+    image: Option<(Console, BezelPick, (u32, u32), bool)>,
     labels: [String; 3],
     faces: [(Option<TexId>, Option<TexId>); 3],
 }
@@ -161,6 +184,7 @@ impl Frontend {
             start: now,
             last: now,
             draws: Vec::new(),
+            shown: None,
             polaroid_texes: Vec::new(),
             title_tex: None,
             faces: FaceBuilder::spawn(),
@@ -186,6 +210,7 @@ impl Frontend {
             link_shot: None,
             link_shot_size: (0, 0),
             link_shot_shown: false,
+            game_upload: crate::frames::LastUpload::default(),
         }
     }
 
@@ -237,11 +262,20 @@ impl Frontend {
             })
             .collect();
         self.session.app_mut().set_icon_faces(icons);
+        let percents = (0..=100)
+            .map(|p| {
+                let f = word_ink(&format!("{p}%"), HUD_INK);
+                (compositor.create_texture(f.w, f.h, &f.rgba), f.w, f.h)
+            })
+            .collect();
+        self.session.app_mut().set_percent_faces(percents);
         let alert = icon_face(Icon::Alert, ALERT_PX, ALERT_INK);
         let alert = compositor.create_texture(alert.w, alert.h, &alert.rgba);
         self.session.app_mut().set_alert_face(alert);
         let legend = legend_faces(compositor, &LEGEND);
         self.session.app_mut().set_legend_faces(legend);
+        let games_legend = legend_faces(compositor, &GAMES_LEGEND);
+        self.session.app_mut().set_games_legend_faces(games_legend);
         let hint = set_clock_hint_face();
         self.clocks.hint = Some(compositor.create_texture(hint.w, hint.h, &hint.rgba));
         let back = hint_face("B", "Back");
@@ -268,6 +302,14 @@ impl Frontend {
         self.session
             .app_mut()
             .set_gb_cart_backings(notched, rounded);
+        for mould in [slot_ui::Mould::Nes, slot_ui::Mould::Snes] {
+            let shadow = slot_ui::mould_shadow(mould);
+            let shadow = compositor.create_texture(shadow.w, shadow.h, &shadow.rgba);
+            self.session.app_mut().set_mould_shadow(mould, shadow);
+            let backing = slot_ui::mould_backing(mould);
+            let backing = compositor.create_texture(backing.w, backing.h, &backing.rgba);
+            self.session.app_mut().set_mould_backing(mould, backing);
+        }
         let slot = {
             let mut upload =
                 |bytes: &[u8]| compositor.create_texture(slot_ui::SLOT_W, slot_ui::SLOT_H, bytes);
@@ -477,11 +519,15 @@ impl Frontend {
         }
     }
 
-    pub fn render(&mut self, compositor: &mut Compositor, window: (u32, u32)) {
+    /// Draws the frame, or returns false when it would only repeat the one on the panel.
+    pub fn render(&mut self, compositor: &mut Compositor, window: (u32, u32)) -> bool {
         self.session.app_mut().set_panel(window);
         compositor.fit(window);
-        self.compose(compositor);
+        if !self.compose_changed(compositor, window) {
+            return false;
+        }
         compositor.end_frame(window);
+        true
     }
 
     fn grab_link_shot(&mut self, compositor: &mut Compositor) {
@@ -521,41 +567,64 @@ impl Frontend {
     }
 
     pub fn compose(&mut self, compositor: &mut Compositor) {
+        self.shown = None;
+        self.compose_changed(compositor, (0, 0));
+    }
+
+    fn compose_changed(&mut self, compositor: &mut Compositor, window: (u32, u32)) -> bool {
         compositor.set_blue_light(self.session.app().blue_light());
-        compositor.set_picture(self.session.app().picture_rect());
-        compositor.set_screen_effect(match self.session.app().screen_shader() {
-            slot_store::Shader::Off => ScreenEffect::None,
-            slot_store::Shader::Lcd3x => ScreenEffect::Lcd3x,
-            slot_store::Shader::Grid => ScreenEffect::Grid,
-            slot_store::Shader::Dot => ScreenEffect::Dot,
-            slot_store::Shader::Simpletex => ScreenEffect::Simpletex,
+        compositor.set_dim(self.session.app().picture_dim());
+        let tv = self.session.app().tv_fit();
+        compositor.set_picture(game_picture(self.session.app(), tv));
+        // The LCD effects draw a handheld's pixel grid; a TV console's picture goes without.
+        compositor.set_screen_effect(match (tv, self.session.app().screen_shader()) {
+            (Some(_), _) | (None, slot_store::Shader::Off) => ScreenEffect::None,
+            (None, slot_store::Shader::Lcd3x) => ScreenEffect::Lcd3x,
+            (None, slot_store::Shader::Grid) => ScreenEffect::Grid,
+            (None, slot_store::Shader::Dot) => ScreenEffect::Dot,
+            (None, slot_store::Shader::Simpletex) => ScreenEffect::Simpletex,
         });
         compositor.set_shake(self.session.app().screen_shake());
         compositor.set_screen_power(self.session.app().screen_power());
         compositor.set_screen_footer(self.session.app().screen_footer());
-        compositor.set_game_source_rect(self.session.app().source_rect());
+        compositor.set_game_source_rect(game_source(self.session.app(), tv));
+        compositor.set_tv_game(tv);
         self.grab_link_shot(compositor);
         compositor.begin_frame();
         if self.draw_rebuild(compositor) {
-            return;
+            self.shown = None;
+            return true;
         }
         if let Some([r, g, b]) = self.session.app().blank_panel() {
-            let px = (slot_gfx::SRC_W * slot_gfx::SRC_H) as usize;
-            compositor.upload_game(&[b, g, r, 0xff].repeat(px));
+            let (w, h) = match tv {
+                Some(_) => self.session.app().playing_platform().picture(),
+                None => (slot_gfx::SRC_W, slot_gfx::SRC_H),
+            };
+            let blank = [b, g, r, 0xff].repeat((w * h) as usize);
+            if self.game_upload.changed(&blank, (w, h)) {
+                compositor.upload_game_sized(&blank, w, h);
+            }
         } else if let Some(frame) = self.session.frame() {
-            compositor.upload_game(&frame);
+            let (w, h) = frame.size();
+            // A repeated frame leaves the upload count alone, so the Shown check below skips
+            // the draw and the flip when nothing else changed either.
+            if self.game_upload.changed(&frame, (w, h)) {
+                compositor.upload_game_sized(&frame, w, h);
+            }
             crate::latency::taken();
         }
         self.cart_faces.sync(self.session.app_mut(), compositor);
         sync_clock(self.session.app_mut(), compositor, &mut self.clocks);
         sync_binding_faces(self.session.app_mut(), compositor);
+        self.session.app_mut().sync_cheat_faces(compositor);
         sync_about(self.session.app_mut(), compositor, &mut self.about);
         sync_quick_clock(self.session.app_mut(), compositor, &mut self.quick_clock);
         sync_quick_palette(self.session.app_mut(), compositor, &mut self.quick_palette);
         sync_wallpaper(self.session.app_mut(), compositor, &mut self.wallpaper);
         sync_game_bezel(self.session.app_mut(), compositor, &mut self.game_bezel);
-        compositor.set_game_bezel(self.session.app().shown_game_bezel());
+        compositor.set_game_bezel(tv.map_or(self.session.app().shown_game_bezel(), |_| None));
         compositor.set_sp_frame(self.session.app().sp_frame());
+        compositor.set_tall_game(tv.map_or(self.session.app().tall_game(), |_| None));
         sync_core_picker(
             self.session.app_mut(),
             compositor,
@@ -613,7 +682,32 @@ impl Frontend {
         );
         self.draws.clear();
         self.session.app().draw(&mut self.draws);
-        compositor.draw_list(&self.draws);
+        let app = self.session.app();
+        let shown = Shown {
+            draws: std::mem::take(&mut self.draws),
+            window,
+            uploads: compositor.uploads(),
+            blue_light: app.blue_light(),
+            dim: app.picture_dim(),
+            picture: game_picture(app, tv),
+            shader: app.screen_shader(),
+            shake: app.screen_shake(),
+            power: app.screen_power(),
+            footer: app.screen_footer(),
+            source: game_source(app, tv),
+            bezel: tv.map_or(app.shown_game_bezel(), |_| None),
+            sp_frame: app.sp_frame(),
+            tall: tv.map_or(app.tall_game(), |_| None),
+            tv,
+        };
+        if self.shown.as_ref() == Some(&shown) {
+            self.draws = shown.draws;
+            return false;
+        }
+        compositor.draw_list(&shown.draws);
+        self.draws.clone_from(&shown.draws);
+        self.shown = Some(shown);
+        true
     }
 
     pub fn drive_emulator(&mut self) {
@@ -622,6 +716,11 @@ impl Frontend {
 
     pub fn step_emulator(&self, present: Duration, timeout: Duration) -> bool {
         self.session.step_emulator(present, timeout)
+    }
+
+    /// A game is on screen with its core running, stepped once a turn of the main loop.
+    pub fn game_running(&self) -> bool {
+        self.session.emu().is_some() && matches!(self.session.app().phase(), Phase::Playing { .. })
     }
 
     pub fn rebuilding_labels(&self) -> bool {
@@ -905,7 +1004,7 @@ struct Faces<'a> {
 }
 
 fn sync_switcher(app: &mut App, compositor: &mut Compositor, texes: Faces, state: &mut Switcher) {
-    if !matches!(app.phase(), Phase::Polaroids { .. }) {
+    if !app.polaroids_open() {
         state.open = false;
         return;
     }
@@ -928,16 +1027,21 @@ fn sync_switcher(app: &mut App, compositor: &mut Compositor, texes: Faces, state
                 }
             })
             .collect();
-        app.set_polaroid_faces(ids);
+        app.set_polaroid_faces(
+            ids,
+            faces.iter().map(|f| f.game_boy).collect(),
+            faces.iter().map(|f| (f.w, f.h)).collect(),
+        );
 
         let label = app
             .undo_label()
             .map(|l| upload(compositor, texes.undo, hint_face("X", l)));
         app.set_undo_face(label);
     }
-    if state.titled.as_deref() != app.polaroid_stamp() {
-        state.titled = app.polaroid_stamp().map(str::to_string);
-        let face = title_face(&app.polaroid_title(&format_stamp(app.wall_secs())));
+    let title = app.polaroid_title(&format_stamp(app.wall_secs()));
+    if state.titled.as_deref() != Some(title.as_str()) {
+        let face = title_face(&title);
+        state.titled = Some(title);
         let id = upload(compositor, texes.title, face);
         app.set_polaroid_title_face(id);
     }
@@ -986,7 +1090,10 @@ fn sync_clock(app: &mut App, compositor: &mut Compositor, clocks: &mut Clocks) {
         app.set_shelf_clock_face(id, w);
     }
     let platform_shown = app.slot_text().unwrap_or_default();
-    if platform_shown != clocks.platform {
+    // A folder opens under its system's name, the same text as the shelf it opened from, but
+    // with the name's face let go: it is drawn again all the same.
+    let lost = !platform_shown.is_empty() && !app.shelf_platform_drawn();
+    if platform_shown != clocks.platform || lost {
         clocks.platform = platform_shown.clone();
         if platform_shown.is_empty() {
             app.clear_shelf_platform();
@@ -1024,11 +1131,29 @@ fn sync_clock(app: &mut App, compositor: &mut Compositor, clocks: &mut Clocks) {
     }
 }
 
+/// The part of the game texture that is picture. A TV console's frame is all picture, at
+/// whatever size the core sent it.
+fn game_picture(app: &App, tv: Option<slot_gfx::TvFit>) -> [f32; 4] {
+    match tv {
+        Some(_) => slot_gfx::WHOLE_TEXTURE,
+        None => app.picture_rect(),
+    }
+}
+
+/// The part of the game texture drawn. A TV console's whole frame goes into its own rect.
+fn game_source(app: &App, tv: Option<slot_gfx::TvFit>) -> [f32; 4] {
+    match tv {
+        Some(_) => slot_gfx::WHOLE_TEXTURE,
+        None => app.source_rect(),
+    }
+}
+
 fn sync_game_bezel(app: &mut App, compositor: &mut Compositor, state: &mut BezelSync) {
     let platform = app.playing_platform();
     let pick = app.resolved_bezel(platform);
     let (w, h) = app.game_bezel_size();
-    let shown = (platform, pick, (w, h));
+    let tall = app.tall_game().is_some();
+    let shown = (platform, pick, (w, h), tall);
     if state.image.as_ref() != Some(&shown) {
         let rgba = match &shown.1 {
             BezelPick::None | BezelPick::Ags102 => None,

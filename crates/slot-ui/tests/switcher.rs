@@ -269,3 +269,26 @@ fn a_hint_is_laid_out_at_the_width_it_rasterises_to() {
         assert_eq!(hint_width(key, label), hint_face(key, label).w);
     }
 }
+
+#[test]
+fn the_game_switcher_names_back_remove_states_and_resume() {
+    let p = Polaroids::games(vec![entry("2026-08-09_14-00-00")]);
+    let keys: Vec<&str> = p.hints().iter().map(|h| h.key).collect();
+    assert_eq!(keys, ["B", "Y", "X", "A"]);
+    let out = draw(&p);
+    let mid = OUT_W as f32 / 2.0;
+    let resume = hint_rect(&out, "A").expect("no resume hint");
+    assert!(resume.x > mid, "resume is not on the right");
+}
+
+#[test]
+fn the_game_switcher_print_sits_between_the_plates() {
+    let p = Polaroids::games(vec![entry("2026-08-09_14-00-00")]);
+    let canvas = slot_gfx::Canvas::FRAMED;
+    let mut out = Vec::new();
+    p.draw_print(canvas, &mut out);
+    let print = quads(&out)[0];
+    assert!(print.y >= PLATE_H && print.y + print.h <= canvas.h - PLATE_H + 0.01);
+    assert!(print.x >= 0.0 && print.x + print.w <= canvas.w + 0.01);
+    assert!((print.w / print.h - PHOTO_W as f32 / PHOTO_H as f32).abs() < 0.01);
+}

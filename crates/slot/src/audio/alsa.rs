@@ -23,6 +23,8 @@ const PERIOD_FRAMES: usize = 512;
 const RELEASE_AFTER: Duration = Duration::from_secs(3);
 
 const DEVICES: [&str; 4] = ["plug:default", "default", "plughw:0,0", "hw:0,0"];
+/// Where the sound goes while a TV is connected: the Miyoo Flip's HDMI card.
+const HDMI_DEVICE: &str = "plughw:CARD=rockchiphdmi,DEV=0";
 
 type PcmOpen = unsafe extern "C" fn(*mut *mut c_void, *const c_char, c_int, c_int) -> c_int;
 type PcmSetParams =
@@ -81,7 +83,8 @@ impl Alsa {
 
     fn open_pcm(&self, rate: u32) -> Result<*mut c_void, AudioError> {
         let mut last = AudioError::NoDevice;
-        for name in DEVICES {
+        let hdmi = crate::hdmi::connected().then_some(HDMI_DEVICE);
+        for name in hdmi.into_iter().chain(DEVICES) {
             let Ok(cname) = CString::new(name) else {
                 continue;
             };

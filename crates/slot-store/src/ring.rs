@@ -86,6 +86,16 @@ impl StateRing {
         atomic_write(&self.path(RESUME, STATE_EXT), state)
     }
 
+    pub fn write_resume_thumb(&self, png: &[u8]) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        atomic_write(&self.path(RESUME, THUMB_EXT), png)
+    }
+
+    pub fn resume_thumb(&self) -> Option<PathBuf> {
+        let thumb = self.path(RESUME, THUMB_EXT);
+        (thumb.exists() && self.path(RESUME, STATE_EXT).exists()).then_some(thumb)
+    }
+
     pub fn read_resume(&self) -> std::io::Result<Option<Vec<u8>>> {
         match std::fs::read(self.path(RESUME, STATE_EXT)) {
             Ok(b) => Ok(Some(b)),

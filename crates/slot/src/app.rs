@@ -12,13 +12,14 @@ use slot_store::{
     WallpaperTint, BLUE_LIGHT_MAX, BRIGHTNESS_MAX, FF_SPEEDS, RING_MAX, VOLUME_MAX,
 };
 use slot_ui::{
-    board_from, board_zoom, draw_empty_slot, draw_footer, draw_ground, draw_slot_name,
-    draw_sticker, ease, footer_ink, grown, lid_at, lid_from, lift_of, on_board, repeat_gap,
-    shelf_cart_at, ClockPicker, Draw, FfState, GbShell, Hud, HudKind, Icon, LinkBadge, Millis,
-    Placed, Polaroids, PowerChoice, QuickMenu, QuickMenuFaces, QuickRow, QuickValue, Refusal,
-    Shelf, SlotChrome, TexId, Toast, CART_W, CHIP_H, CHIP_U, CHIP_V, CHIP_W, HINT_EDGE, HOP_LIFT,
-    MOUTH_H, REPEAT_DELAY_MS, SHADOW_H, SHADOW_W, SOCKET_H, SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
+    cart_box, draw_empty_slot, draw_footer, draw_ground, draw_slot_name, draw_sticker, ease,
+    folder_title_size, footer_ink, grown, lift_of, open_layout, repeat_gap, shelf_cart_of,
+    ClockPicker, Draw, FfState, GbShell, Hud, HudKind, Icon, LinkBadge, Millis, Placed, Polaroids,
+    PowerChoice, QuickMenu, QuickMenuFaces, QuickRow, QuickValue, Refusal, Shelf, SlotChrome,
+    Stack, TexId, Toast, CHIP_H, CHIP_W, HINT_EDGE, MOUTH_H, REPEAT_DELAY_MS, SHADOW_H, SHADOW_W,
+    SOCKET_H, SOCKET_W, TURN_PAD,
 };
+use slot_ui::{draw_pose, shelf_box, stack_poses, Pose};
 
 use crate::audio::Sfx;
 use crate::core_picker::{Chip, CorePicker, Outcome, Press};
@@ -30,8 +31,17 @@ use crate::persist::{self, Snapshot};
 use crate::video_mode::{self, VideoMode};
 use slot_store::{
     read_carousel, read_controls, read_shortcuts, write_carousel, write_controls, write_shortcuts,
-    Binding, CarouselKeys, Controls, Device, GameButton, Modifier, ShortcutKeys, LID_OFF_MIN,
+    Binding, CarouselKeys, Controls, Device, GameButton, Modifier, ShortcutKeys, AUTO_SLEEP_MIN,
+    DIM_SCREEN_S, LID_OFF_MIN, SWITCHER_GAMES,
 };
+
+mod cheats;
+mod extras_menu;
+mod played_plate;
+mod power_saving;
+mod report;
+
+pub use power_saving::{cpu_cap, CPU_FULL_KHZ, CPU_LIGHT_KHZ};
 
 pub const RECORDING: &str = "Recording";
 pub const CLASH_MARK: &str = "!";
@@ -83,6 +93,7 @@ pub const UNDO_GRACE_MS: Millis = 30_000;
 pub const LINK_LOST_MS: Millis = 2000;
 
 const PLAY_HOLD_MS: Millis = 500;
+const GAMES_MAX: usize = 10;
 
 const SHUTDOWN_SHOW_MS: Millis = 250;
 
@@ -110,9 +121,6 @@ fn link_keys_w(faces: &[(TexId, u32)]) -> f32 {
         .sum::<f32>()
         + LINK_LEGEND_GAP * faces.len().saturating_sub(1) as f32
 }
-const LID_SHADOW_W: f32 = 168.0;
-const LID_SHADOW_H: f32 = 18.0;
-const LID_SHADOW_DROP: f32 = 27.1;
 const LID_SHADOW_ALPHA: f32 = 0.8;
 const FACES_WAIT_MS: Millis = 1500;
 
@@ -293,44 +301,192 @@ pub enum Phase {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Rack {
+    /// Activity, Get lucky and Never played: no carts of its own.
+    Extras,
     Recents,
     Favorites,
     Of(Platform),
+    /// The games of one folder on a platform's shelf, opened from it with A.
+    Folder(Platform),
 }
 
 impl Rack {
     fn platform(self) -> Option<Platform> {
         match self {
-            Rack::Of(p) => Some(p),
-            Rack::Recents | Rack::Favorites => None,
+            Rack::Of(p) | Rack::Folder(p) => Some(p),
+            Rack::Extras | Rack::Recents | Rack::Favorites => None,
         }
     }
 
     fn key(self) -> String {
         match self {
+            Rack::Extras => "extras".into(),
             Rack::Recents => "recents".into(),
             Rack::Favorites => "favorites".into(),
             Rack::Of(p) => p.dir_name().to_ascii_lowercase(),
+            Rack::Folder(p) => format!("folder-{}", p.dir_name().to_ascii_lowercase()),
         }
     }
 
     fn name(self) -> &'static str {
         match self {
+            Rack::Extras => "Extras",
             Rack::Recents => "Recents",
             Rack::Favorites => "Favorites",
-            Rack::Of(p) => p.name(),
+            Rack::Of(p) | Rack::Folder(p) => p.name(),
         }
     }
 }
 
-const RECENTS_AT: usize = 0;
-const FAVORITES_AT: usize = 1;
+const EXTRAS_AT: usize = 0;
+/// How stiffly the Extras row springs to the item under the cursor, as the shelf does.
+const EXTRA_OMEGA: f32 = 16.0;
+const RECENTS_AT: usize = 1;
+/// Play is written to the card once this much of it has gathered.
+const PLAY_LOG_SECS: f32 = 60.0;
+/// How long a shut lid waits before sleeping for real: long enough for the last saves to land
+/// and for a lid opened again straight away.
+const SUSPEND_AFTER_MS: Millis = 3000;
+/// How long the shelf must rest on a cart before that cart is saved as where to start next.
+const SHELF_SETTLE_MS: Millis = 2000;
+
+/// How many of a folder's carts its stack shows.
+const STACK_CARTS: usize = 3;
+/// The opened folder's name strip: its top on a 720 canvas over GBA carts, and over paks, and its
+/// turn.
+const FOLDER_TITLE_Y_GBA: f32 = 22.0;
+const FOLDER_TITLE_Y_GB: f32 = 2.0;
+const FOLDER_TITLE_TURN: f32 = -2.0;
+
+/// Opening a folder takes this long; closing plays the same moves backwards.
+const FOLDER_OPEN_MS: f32 = 1100.0;
+/// How high the carts rise off each other before they fan out, and the side carts' scale there.
+const FOLDER_LIFT: f32 = 24.0;
+const SIDE_CART: f32 = 0.78;
+
+/// The rows of a folder's START menu, top to bottom.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum FolderRow {
+    Rename,
+    Cover,
+    Sort,
+    Core,
+    Open,
+    Paper,
+}
+
+impl FolderRow {
+    const ALL: [FolderRow; 6] = [
+        FolderRow::Rename,
+        FolderRow::Cover,
+        FolderRow::Sort,
+        FolderRow::Core,
+        FolderRow::Open,
+        FolderRow::Paper,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            FolderRow::Rename => "Rename",
+            FolderRow::Cover => "Cover",
+            FolderRow::Sort => "Sort",
+            FolderRow::Core => "Core",
+            FolderRow::Open => "Open at",
+            FolderRow::Paper => "Paper",
+        }
+    }
+}
+
+/// The menu opens over this long and closes faster; the band's loop glides between rows.
+const FOLDER_MENU_OPEN_MS: f32 = 420.0;
+const FOLDER_MENU_CLOSE_MS: f32 = 300.0;
+const FOLDER_LOOP_GLIDE_MS: f32 = 300.0;
+/// The stack parks small over the sheet, centred at this height.
+const FOLDER_PARKED_SCALE: f32 = 0.3;
+const FOLDER_PARKED_Y: f32 = 62.0;
+
+/// The name being written in the name entry.
+#[derive(Clone, Debug)]
+struct NameEntry {
+    name: String,
+    lower: bool,
+    cursor: slot_ui::Cursor,
+}
+
+/// START on a folder: its settings, and Rename's name entry over them.
+#[derive(Clone, Debug)]
+struct FolderMenu {
+    parent: usize,
+    item: usize,
+    folder: usize,
+    row: usize,
+    /// The first row shown; the sheet holds four.
+    first: usize,
+    opened: Millis,
+    closing: Option<Millis>,
+    /// Where the loop glides from, in rows below the first shown, and when it set off.
+    glide: (f32, Millis),
+    entry: Option<NameEntry>,
+}
+
+/// A folder opening onto its shelf, or closing back into its stack.
+#[derive(Copy, Clone, Debug)]
+struct FolderMotion {
+    /// The shelf the folder stands on, and its place there.
+    parent: usize,
+    item: usize,
+    /// The shelf of the folder's own games.
+    folder: usize,
+    start: Millis,
+    opening: bool,
+}
+const FAVORITES_AT: usize = 2;
 
 pub struct App {
     phase: Phase,
     shelves: Vec<(Rack, Shelf)>,
     shelf_at: usize,
     orphaned: Vec<TexId>,
+    played_plate: played_plate::PlayedPlate,
+    report: report::Report,
+    folder_band: Option<TexId>,
+    folder_motion: Option<FolderMotion>,
+    /// The Extras item under the cursor, counted without wrapping so the row scrolls on, and
+    /// where the row stands as it springs there.
+    extra_pos: i64,
+    extra_scroll: f32,
+    extra_vel: f32,
+    extra_faces: [Option<TexId>; 3],
+    /// The slate's three dice and the blister pack's bubble, drawn over them and moved apart
+    /// when they open.
+    extra_dice: [Option<TexId>; 3],
+    extra_bubble: Option<TexId>,
+    /// A pick in motion: the item, when A was pressed, and the game it lands on.
+    extra_motion: Option<(slot_ui::Extra, Millis, Recent)>,
+    /// A pick's game is starting: no cartridge, no console, the screen goes straight to it.
+    straight_in: bool,
+    /// The receipt and the blister pack need drawing again: play was logged or a pick made.
+    extras_stale: bool,
+    /// START on Get lucky or Never played: its system setting.
+    extras_menu: extras_menu::ExtrasMenu,
+    /// The shelf and cart last seen under the cursor, and since when.
+    shelf_seen: Option<((usize, String), Millis)>,
+    /// Each folder's shelf and its settings.
+    folder_prefs: Vec<(usize, slot_store::FolderPrefs)>,
+    folder_menu: Option<FolderMenu>,
+    folder_menu_face: Option<TexId>,
+    folder_entry_face: Option<TexId>,
+    /// The menu or entry sheet needs drawing again after a change.
+    folder_sheet_stale: bool,
+    folder_menu_loop: Option<TexId>,
+    folder_key_loops: [Option<TexId>; 2],
+    folder_legend: Vec<(TexId, u32)>,
+    entry_legend: Vec<(TexId, u32)>,
+    /// Bumped whenever carts change places on a shelf, so faces in flight are dropped.
+    shelf_epoch: u64,
+    /// Each opened folder's name strip, by the folder's shelf.
+    /// Each opened folder's name strip, with its face's width.
+    folder_titles: Vec<(usize, TexId, u32)>,
     play_held: Option<Millis>,
     held_dir: Option<(Btn, Millis, usize)>,
     refusal: Option<Refusal>,
@@ -370,6 +526,10 @@ pub struct App {
     reset_prompt: Option<QuickRow>,
     reset_faces: Vec<(TexId, u32, u32)>,
     delete_prompt: bool,
+    /// The game Y on its open cartridge offered to delete, waiting on X to confirm.
+    game_delete: Option<Recent>,
+    /// The prompt's title naming the game, its detail and its legends.
+    game_delete_faces: Vec<(TexId, u32, u32)>,
     delete_faces: Vec<(TexId, u32, u32)>,
     act_at: Millis,
     root: Option<PathBuf>,
@@ -378,6 +538,8 @@ pub struct App {
     controls: Controls,
     capture: Option<BindCapture>,
     plugged_face: Option<TexId>,
+    /// The playing game's cheats and the in-game menu's page of them.
+    cheats: cheats::Cheats,
     binding_faces: HashMap<String, [(TexId, u32, u32); 2]>,
     carousel: CarouselKeys,
     shortcuts: ShortcutKeys,
@@ -387,6 +549,17 @@ pub struct App {
     colour_pending: Option<bool>,
     palette_live: bool,
     palette_pending: Option<GbColors>,
+    /// When the player last pressed anything, for Auto Sleep and Dim Screen.
+    pressed_at: Millis,
+    saving: power_saving::Saving,
+    /// The doze came from Auto Sleep, so with the lid open any press wakes.
+    slept_idle: bool,
+    /// The wall clock when the lid closed, which keeps running through a deep sleep.
+    dozed_wall: Option<i64>,
+    /// The game being played now, since when (wall clock), and the play not yet written.
+    play_session: Option<(i64, Recent, f32)>,
+    /// The device said no to a deep sleep; the screen just stays off.
+    no_suspend: bool,
     link_player: Option<u8>,
     platform: Platform,
     named_core: bool,
@@ -394,8 +567,12 @@ pub struct App {
     link: Option<LinkSession>,
     sfx: Option<Sfx>,
     polaroids: Option<Polaroids>,
+    games: Option<Vec<Recent>>,
+    games_after_eject: bool,
+    states_after_insert: bool,
     pending: Option<(PendingUndo, Millis)>,
     legend_faces: Vec<TexId>,
+    games_legend_faces: Vec<TexId>,
     undo_face: Option<TexId>,
     clock_faces: Option<(TexId, TexId)>,
     clock_back: Option<(TexId, u32)>,
@@ -403,7 +580,7 @@ pub struct App {
     quick_clock_faces: Option<[(TexId, u32, u32); 2]>,
     quick_wallpaper_faces: Option<[(TexId, u32, u32); 2]>,
     quick_palette_faces: Option<[(TexId, u32, u32); 2]>,
-    quick_bezel_faces: [Option<[(TexId, u32, u32); 2]>; 3],
+    quick_bezel_faces: [Option<[(TexId, u32, u32); 2]>; Platform::ALL.len()],
     game_bezel: Option<TexId>,
     in_game_menu: Option<QuickRow>,
     /// 0 while the pause footer is off the bottom, 1 when it sits in the carousel's place.
@@ -465,20 +642,77 @@ pub struct FaceWant {
     pub on_screen: bool,
 }
 
+/// The systems' shelves, in the order they follow Extras, Recents and Favorites.
+const SHELF_ORDER: [Platform; 5] = [
+    Platform::Nes,
+    Platform::Snes,
+    Platform::Gb,
+    Platform::Gbc,
+    Platform::Gba,
+];
+
 fn shelves_of(carts: Vec<Cart>) -> Vec<(Rack, Shelf)> {
-    let mut rows: Vec<(Rack, Vec<Cart>)> = [Rack::Recents, Rack::Favorites]
+    let mut rows: Vec<(Rack, Vec<Cart>)> = [Rack::Extras, Rack::Recents, Rack::Favorites]
         .into_iter()
-        .chain(Platform::ALL.iter().map(|p| Rack::Of(*p)))
+        .chain(SHELF_ORDER.iter().map(|p| Rack::Of(*p)))
         .map(|r| (r, Vec::new()))
         .collect();
+    let mut folders: Vec<(Platform, String, Vec<Cart>)> = Vec::new();
     for cart in carts {
+        if let Some(name) = cart.folder().map(str::to_string) {
+            match folders
+                .iter_mut()
+                .find(|(p, n, _)| *p == cart.platform && *n == name)
+            {
+                Some((_, _, games)) => games.push(cart),
+                None => folders.push((cart.platform, name, vec![cart])),
+            }
+            continue;
+        }
         if let Some((_, row)) = rows.iter_mut().find(|(r, _)| *r == Rack::Of(cart.platform)) {
             row.push(cart);
         }
     }
-    rows.into_iter()
+    // Each folder stands on its platform's shelf as an entry named after it, in name order with
+    // the games; its own games make a shelf of their own at the end, reached only through it.
+    let first_folder = rows.len();
+    let mut dirs = Vec::new();
+    for (platform, name, games) in &folders {
+        let dir = games[0].rom.parent().unwrap_or(&games[0].rom).to_path_buf();
+        if let Some((_, row)) = rows.iter_mut().find(|(r, _)| *r == Rack::Of(*platform)) {
+            row.push(Cart {
+                platform: games[0].platform,
+                stem: name.clone(),
+                rom: dir.clone(),
+                label: None,
+                title: name.clone(),
+                code: String::new(),
+                shell: None,
+            });
+        }
+        dirs.push(dir);
+    }
+    // Folders come first on their shelf, by name, then the loose games by name.
+    for (_, row) in rows.iter_mut() {
+        row.sort_by_key(|c| (!dirs.contains(&c.rom), slot_store::sort_key(&c.stem)));
+    }
+    let mut shelves: Vec<(Rack, Shelf)> = rows
+        .into_iter()
         .map(|(rack, carts)| (rack, Shelf::new(carts)))
-        .collect()
+        .collect();
+    for (_, shelf) in shelves.iter_mut() {
+        for i in 0..shelf.carts.len() {
+            if let Some(k) = dirs.iter().position(|d| *d == shelf.carts[i].rom) {
+                shelf.set_folder(i, first_folder + k);
+            }
+        }
+    }
+    shelves.extend(
+        folders
+            .into_iter()
+            .map(|(platform, _, games)| (Rack::Folder(platform), Shelf::new(games))),
+    );
+    shelves
 }
 
 fn shift_down(draws: &mut [Draw], dy: f32) {
@@ -512,6 +746,32 @@ impl App {
             shelves,
             shelf_at,
             orphaned: Vec::new(),
+            played_plate: Default::default(),
+            report: Default::default(),
+            folder_band: None,
+            folder_motion: None,
+            extra_pos: 0,
+            extra_scroll: 0.0,
+            extra_vel: 0.0,
+            extra_faces: [None; 3],
+            extra_dice: [None; 3],
+            extra_bubble: None,
+            extra_motion: None,
+            straight_in: false,
+            extras_stale: true,
+            extras_menu: Default::default(),
+            shelf_seen: None,
+            folder_prefs: Vec::new(),
+            folder_menu: None,
+            folder_menu_face: None,
+            folder_entry_face: None,
+            folder_sheet_stale: false,
+            folder_menu_loop: None,
+            folder_key_loops: [None; 2],
+            folder_legend: Vec::new(),
+            entry_legend: Vec::new(),
+            shelf_epoch: 0,
+            folder_titles: Vec::new(),
             play_held: None,
             held_dir: None,
             refusal: None,
@@ -551,6 +811,8 @@ impl App {
             reset_prompt: None,
             reset_faces: Vec::new(),
             delete_prompt: false,
+            game_delete: None,
+            game_delete_faces: Vec::new(),
             delete_faces: Vec::new(),
             act_at: 0,
             root: None,
@@ -559,6 +821,7 @@ impl App {
             controls: Controls::default(),
             capture: None,
             plugged_face: None,
+            cheats: cheats::Cheats::default(),
             binding_faces: HashMap::new(),
             carousel: CarouselKeys::default(),
             shortcuts: ShortcutKeys::default(),
@@ -568,6 +831,12 @@ impl App {
             colour_pending: None,
             palette_live: false,
             palette_pending: None,
+            pressed_at: 0,
+            saving: power_saving::Saving::default(),
+            slept_idle: false,
+            dozed_wall: None,
+            play_session: None,
+            no_suspend: false,
             link_player: None,
             platform: Platform::default(),
             named_core: false,
@@ -575,8 +844,12 @@ impl App {
             link: None,
             sfx: None,
             polaroids: None,
+            games: None,
+            games_after_eject: false,
+            states_after_insert: false,
             pending: None,
             legend_faces: Vec::new(),
+            games_legend_faces: Vec::new(),
             undo_face: None,
             clock_faces: None,
             clock_back: None,
@@ -584,7 +857,7 @@ impl App {
             quick_clock_faces: None,
             quick_wallpaper_faces: None,
             quick_palette_faces: None,
-            quick_bezel_faces: [None, None, None],
+            quick_bezel_faces: [None; Platform::ALL.len()],
             game_bezel: None,
             in_game_menu: None,
             footer: 0.0,
@@ -647,6 +920,7 @@ impl App {
         app.controls = read_controls(root);
         app.restock_recents();
         app.restock_favorites();
+        app.load_folders();
         if let Some((at, i)) = app.remembered_seat() {
             app.shelf_at = at;
             app.shelves[at].1.select(i);
@@ -665,15 +939,14 @@ impl App {
         let seated = if self.single_cart() {
             Some((self.shelf_at, 0))
         } else {
-            let stem = self.state.cart.clone();
             let platform = self.state.cart_platform;
-            stem.and_then(|stem| {
-                let shelf = &self.shelf().carts;
-                let here = shelf
-                    .iter()
-                    .position(|c| c.stem == stem && platform.is_none_or(|p| c.platform == p));
-                here.map(|i| (self.shelf_at, i))
-                    .or_else(|| self.seat_of(&stem, platform))
+            // A card that never named the cart's system was left by a slot that ran GBA carts
+            // first, so a GBA cart of that name is the one it meant, whatever shelf comes first.
+            self.state.cart.as_deref().and_then(|stem| match platform {
+                Some(_) => self.find_seat(stem, platform),
+                None => self
+                    .find_seat(stem, Some(Platform::Gba))
+                    .or_else(|| self.find_seat(stem, None)),
             })
         };
         self.phase = Phase::Shelf;
@@ -703,10 +976,27 @@ impl App {
         &mut self.shelves[self.shelf_at].1
     }
 
+    fn find_seat(&self, stem: &str, platform: Option<Platform>) -> Option<(usize, usize)> {
+        let here = self
+            .shelf()
+            .carts
+            .iter()
+            .position(|c| c.stem == stem && platform.is_none_or(|p| c.platform == p));
+        here.map(|i| (self.shelf_at, i))
+            .or_else(|| self.seat_of(stem, platform))
+    }
+
     fn switch_shelf(&mut self, by: i32) {
-        let Some(to) = self.next_shelf(by) else {
+        if self.in_folder() {
             return;
-        };
+        }
+        if let Some(to) = self.next_shelf(by) {
+            self.go_to_shelf(to);
+        }
+    }
+
+    fn go_to_shelf(&mut self, to: usize) {
+        self.extras_stale |= to == EXTRAS_AT;
         self.shelf_mut().release_hold();
         self.play_held = None;
         self.shelf_at = to;
@@ -753,6 +1043,7 @@ impl App {
         match self.phase {
             Phase::SetClock { .. } => true,
             Phase::QuickMenu { .. } => vertical,
+            Phase::Shelf if self.games.is_some() => !vertical,
             Phase::Shelf => vertical && self.core_picker.is_none(),
             Phase::Polaroids { .. } => !vertical,
             Phase::Playing { .. } => vertical && self.in_game_menu.is_some(),
@@ -800,13 +1091,99 @@ impl App {
         let n = self.shelves.len() as i32;
         (1..n)
             .map(|step| (self.shelf_at as i32 + by * step).rem_euclid(n) as usize)
-            .find(|at| !self.shelves[*at].1.carts.is_empty())
+            .find(|at| {
+                let stocked = match self.shelves[*at].0 {
+                    Rack::Extras => self
+                        .shelves
+                        .iter()
+                        .any(|(r, s)| r.platform().is_some() && !s.carts.is_empty()),
+                    _ => !self.shelves[*at].1.carts.is_empty(),
+                };
+                stocked && !matches!(self.shelves[*at].0, Rack::Folder(_))
+            })
+    }
+
+    fn in_folder(&self) -> bool {
+        matches!(self.shelves[self.shelf_at].0, Rack::Folder(_))
+    }
+
+    fn selected_folder(&self) -> Option<usize> {
+        self.shelf().folder_at(self.shelf().index)
+    }
+
+    /// Opens the folder under the cursor onto its own shelf; false when the entry is a game.
+    fn open_folder(&mut self) -> bool {
+        let Some(at) = self.selected_folder() else {
+            return false;
+        };
+        let (parent, item) = (self.shelf_at, self.shelf().index);
+        let landing = self
+            .prefs_of(at)
+            .filter(|p| p.open_last)
+            .and_then(|p| p.last.clone())
+            .and_then(|last| self.shelves[at].1.carts.iter().position(|c| c.stem == last))
+            .unwrap_or(0);
+        self.go_to_shelf(at);
+        self.shelf_mut().select(landing);
+        self.folder_motion = Some(FolderMotion {
+            parent,
+            item,
+            folder: at,
+            start: self.now(),
+            opening: true,
+        });
+        true
+    }
+
+    /// The folder in motion, with how far along the opening it stands in milliseconds (a closing
+    /// runs that clock backwards).
+    fn folder_moving(&self) -> Option<(FolderMotion, f32)> {
+        let m = self.folder_motion?;
+        let gone = self.now().saturating_sub(m.start) as f32;
+        if gone >= FOLDER_OPEN_MS {
+            return None;
+        }
+        Some((
+            m,
+            if m.opening {
+                gone
+            } else {
+                FOLDER_OPEN_MS - gone
+            },
+        ))
+    }
+
+    fn close_folder(&mut self) {
+        if !self.in_folder() {
+            return;
+        }
+        let here = self.shelf_at;
+        let parent = self
+            .shelves
+            .iter()
+            .enumerate()
+            .find_map(|(at, (_, shelf))| {
+                (0..shelf.carts.len())
+                    .find(|i| shelf.folder_at(*i) == Some(here))
+                    .map(|i| (at, i))
+            });
+        if let Some((at, i)) = parent {
+            self.go_to_shelf(at);
+            self.shelf_mut().select(i);
+            self.folder_motion = Some(FolderMotion {
+                parent: at,
+                item: i,
+                folder: here,
+                start: self.now(),
+                opening: false,
+            });
+        }
     }
 
     fn remembered_seat(&self) -> Option<(usize, usize)> {
         let key = self.state.shelf.as_deref()?;
         let cart = self.state.shelf_cart.as_ref()?;
-        let at = self.shelves.iter().position(|(r, _)| r.key() == key)?;
+        let at = (0..self.shelves.len()).find(|at| self.rack_key(*at) == key)?;
         let i = self.shelves[at]
             .1
             .carts
@@ -819,12 +1196,49 @@ impl App {
         let Some(cart) = self.shelf().carts.get(self.shelf().index) else {
             return;
         };
-        self.state.shelf_cart = Some(Recent {
-            platform: cart.platform,
-            stem: cart.stem.clone(),
-        });
-        self.state.shelf = Some(self.shelves[self.shelf_at].0.key());
+        let (shelf, shelf_cart) = (
+            Some(self.rack_key(self.shelf_at)),
+            Some(Recent {
+                platform: cart.platform,
+                stem: cart.stem.clone(),
+            }),
+        );
+        if (&self.state.shelf, &self.state.shelf_cart) == (&shelf, &shelf_cart) {
+            return;
+        }
+        self.state.shelf = shelf;
+        self.state.shelf_cart = shelf_cart;
         self.persist();
+    }
+
+    /// A shelf's key in slot.state; a folder's names the folder, `folder:GBA/Pokemon Hacks`.
+    fn rack_key(&self, at: usize) -> String {
+        match self.shelves[at].0 {
+            Rack::Folder(_) => format!("folder:{}", self.folder_key(at).unwrap_or_default()),
+            rack => rack.key(),
+        }
+    }
+
+    /// Saves where the shelf stands once it has rested on a cart a while, so the next start
+    /// comes back to it however Slot was left: lid, battery or a restart from outside.
+    fn remember_settled_shelf(&mut self) {
+        let here = match (&self.phase, self.selected_stem()) {
+            (Phase::Shelf, Some(stem))
+                if self.folder_menu.is_none() && self.folder_moving().is_none() =>
+            {
+                (self.shelf_at, stem.to_string())
+            }
+            _ => return,
+        };
+        let now = self.now();
+        match &self.shelf_seen {
+            Some((seen, since)) if *seen == here => {
+                if now.saturating_sub(*since) >= SHELF_SETTLE_MS {
+                    self.remember_shelf();
+                }
+            }
+            _ => self.shelf_seen = Some((here, now)),
+        }
     }
 
     fn seat_of(&self, stem: &str, platform: Option<Platform>) -> Option<(usize, usize)> {
@@ -900,7 +1314,8 @@ impl App {
     }
 
     pub fn in_game_hidden(&self) -> Vec<QuickRow> {
-        let no_bezel = self.playing_platform() == Platform::Gba && !self.framed_panel();
+        let platform = self.playing_platform();
+        let no_bezel = (platform == Platform::Gba && !self.framed_panel()) || platform.on_a_tv();
         let mut hidden = Vec::new();
         if !self.palette_live {
             hidden.push(QuickRow::Palette);
@@ -908,12 +1323,28 @@ impl App {
         if no_bezel {
             hidden.push(QuickRow::Bezel);
         }
+        // The TV consoles have no LCD shaders or colour correction to pick.
+        if platform.on_a_tv() {
+            hidden.extend([QuickRow::Shader, QuickRow::ColourCorrection]);
+        } else {
+            // The handhelds keep their picture keys, L1 and R1, and no row for it.
+            hidden.push(QuickRow::Picture);
+        }
+        if !self.has_cheats() {
+            hidden.push(QuickRow::Cheats);
+        }
         if self.single_cart() {
             hidden.push(QuickRow::ExitGame);
         }
-        if self.playing_platform() != Platform::Gba {
-            hidden.extend([QuickRow::GameL, QuickRow::GameR]);
-        }
+        hidden.extend(self.hidden_tv_core_rows());
+        // Only the buttons the playing console has: L/R on GBA and SNES, X/Y on SNES, turbo on
+        // the rest.
+        let buttons = GameButton::of(platform);
+        hidden.extend(
+            QuickRow::CONTROLS
+                .into_iter()
+                .filter(|r| r.game_button().is_some_and(|g| !buttons.contains(&g))),
+        );
         if !self.left_stick {
             hidden.push(QuickRow::LeftStick);
         }
@@ -953,7 +1384,9 @@ impl App {
             QuickRow::Shader
             | QuickRow::ColourCorrection
             | QuickRow::PlayBrightness
-            | QuickRow::PlayBlueLight => self.quick_value(self.playing_row(row)),
+            | QuickRow::PlayBlueLight => Some(self.playing_row(row))
+                .filter(|playing| *playing != row)
+                .and_then(|playing| self.quick_value(playing)),
             QuickRow::Brightness => Some(QuickValue::level(self.state.brightness)),
             QuickRow::BlueLight => Some(match self.state.blue_light {
                 0 => QuickValue::Off,
@@ -975,6 +1408,21 @@ impl App {
             QuickRow::Rumble => Some(QuickValue::flag(self.state.rumble)),
             QuickRow::LeftStick => Some(QuickValue::flag(self.state.left_stick_dpad)),
             QuickRow::EjectSave => Some(QuickValue::flag(self.state.eject_save)),
+            QuickRow::SwitcherGames => QuickValue::count(self.state.switcher_games),
+            QuickRow::AutoSleep => QuickValue::AUTO_SLEEP
+                .into_iter()
+                .find(|v| v.minutes().unwrap_or(0) == self.state.auto_sleep_min),
+            QuickRow::Picture => Some(match self.video_mode {
+                VideoMode::Stretch => QuickValue::Stretch,
+                VideoMode::Actual => QuickValue::Sharp,
+            }),
+            QuickRow::DimScreen => QuickValue::DIM_SCREEN
+                .into_iter()
+                .find(|v| v.seconds() == Some(self.state.dim_screen_s)),
+            QuickRow::GbaCore => Some(QuickValue::core(self.default_core(Platform::Gba))),
+            QuickRow::GbCore => Some(QuickValue::core(self.default_core(Platform::Gb))),
+            QuickRow::NesCore => Some(QuickValue::core(self.default_core(Platform::Nes))),
+            QuickRow::SnesCore => Some(QuickValue::core(self.default_core(Platform::Snes))),
             QuickRow::Turbo => Some(QuickValue::flag(self.state.turbo)),
             QuickRow::Rewind => Some(QuickValue::flag(self.state.rewind)),
             QuickRow::Recents => Some(if self.state.show_recents {
@@ -1033,6 +1481,8 @@ impl App {
             | QuickRow::GameRight
             | QuickRow::GameA
             | QuickRow::GameB
+            | QuickRow::GameX
+            | QuickRow::GameY
             | QuickRow::GameSelect
             | QuickRow::GameStart
             | QuickRow::GameL
@@ -1054,7 +1504,9 @@ impl App {
             | QuickRow::ScRewind
             | QuickRow::Controls
             | QuickRow::ControlsShelf
-            | QuickRow::ControlsInGame => None,
+            | QuickRow::ControlsInGame
+            | QuickRow::Cheats
+            | QuickRow::CheatList => None,
         }
     }
 
@@ -1080,32 +1532,32 @@ impl App {
     }
 
     pub fn bezel_files(&self, platform: Platform) -> Vec<String> {
-        match platform {
-            Platform::Gba => Vec::new(),
-            _ => self
-                .root()
-                .map(|root| crate::bezel::list(root, platform))
-                .unwrap_or_default(),
-        }
+        self.root()
+            .map(|root| crate::bezel::list(root, platform))
+            .unwrap_or_default()
     }
 
     fn bezel_choices(&self, platform: Platform) -> Vec<BezelPick> {
         let mut choices = vec![BezelPick::None];
-        if platform != Platform::Gba {
+        // The built-in Game Boy frame is drawn round the GBA-shaped screen; a 4:3 panel shows the
+        // Game Boy at full height instead, so there only the player's own bezels are offered.
+        if platform != Platform::Gba && !self.framed_panel() {
             choices.push(BezelPick::Default);
         }
-        if self.framed_panel() {
+        if self.framed_panel() && platform == Platform::Gba {
             choices.push(BezelPick::Ags102);
         }
         choices.extend(self.bezel_files(platform).into_iter().map(BezelPick::File));
         choices
     }
 
-    fn bezel_pick(&mut self, platform: Platform) -> &mut BezelPick {
+    /// The handhelds' bezel picks; the TV consoles have none and show their 4:3 picture bare.
+    fn bezel_pick(&mut self, platform: Platform) -> Option<&mut BezelPick> {
         match platform {
-            Platform::Gba => &mut self.state.bezel_gba,
-            Platform::Gb => &mut self.state.bezel_gb,
-            Platform::Gbc => &mut self.state.bezel_gbc,
+            Platform::Gba => Some(&mut self.state.bezel_gba),
+            Platform::Gb => Some(&mut self.state.bezel_gb),
+            Platform::Gbc => Some(&mut self.state.bezel_gbc),
+            Platform::Nes | Platform::Snes => None,
         }
     }
 
@@ -1114,6 +1566,7 @@ impl App {
             Platform::Gba => &self.state.bezel_gba,
             Platform::Gb => &self.state.bezel_gb,
             Platform::Gbc => &self.state.bezel_gbc,
+            Platform::Nes | Platform::Snes => return BezelPick::None,
         };
         match self.bezel_choices(platform).contains(pick) {
             true => pick.clone(),
@@ -1126,12 +1579,15 @@ impl App {
         let key = self.resolved_bezel(platform).key();
         let at = choices.iter().position(|c| c.key() == key).unwrap_or(0);
         let n = choices.len();
-        *self.bezel_pick(platform) = choices[if right {
+        let to = choices[if right {
             (at + 1) % n
         } else {
             (at + n - 1) % n
         }]
         .clone();
+        if let Some(pick) = self.bezel_pick(platform) {
+            *pick = to;
+        }
     }
 
     pub fn sp_frame(&self) -> bool {
@@ -1267,6 +1723,17 @@ impl App {
         if !self.framed_panel() {
             hidden.push(QuickRow::GbaBezel);
         }
+        if !self
+            .root()
+            .is_some_and(|root| crate::core::installed(root, Core::Gambatte))
+        {
+            hidden.push(QuickRow::GbCore);
+        }
+        hidden.extend(self.hidden_tv_core_rows());
+        // X and Y are Super Nintendo buttons: they show only when there are SNES games.
+        if !self.has_games_of(Platform::Snes) {
+            hidden.extend([QuickRow::GameX, QuickRow::GameY]);
+        }
         if !self.left_stick {
             hidden.push(QuickRow::LeftStick);
         }
@@ -1274,6 +1741,62 @@ impl App {
             hidden.extend([QuickRow::GameTurboA, QuickRow::GameTurboB]);
         }
         hidden
+    }
+
+    /// The NES and SNES core rows show only when the console's alternative core is installed.
+    fn hidden_tv_core_rows(&self) -> Vec<QuickRow> {
+        [
+            (QuickRow::NesCore, Platform::Nes),
+            (QuickRow::SnesCore, Platform::Snes),
+        ]
+        .into_iter()
+        .filter(|(_, platform)| {
+            let alternative = Core::pair(*platform)[1];
+            !self
+                .root()
+                .is_some_and(|root| crate::core::installed(root, alternative))
+        })
+        .map(|(row, _)| row)
+        .collect()
+    }
+
+    fn has_games_of(&self, platform: Platform) -> bool {
+        self.shelves.iter().any(|(rack, shelf)| {
+            matches!(rack, Rack::Of(p) | Rack::Folder(p) if *p == platform)
+                && !shelf.carts.is_empty()
+        })
+    }
+
+    fn default_core(&self, platform: Platform) -> Core {
+        self.root().map_or_else(
+            || Core::default_for(platform),
+            |root| slot_store::default_core(root, platform),
+        )
+    }
+
+    /// Swaps a platform's default core for the other in its pair; Game Boy Color follows Game Boy.
+    fn flip_default_core(&mut self, row: QuickRow) {
+        let Some(root) = self.root().map(Path::to_path_buf) else {
+            return;
+        };
+        let platforms: &[Platform] = match row {
+            QuickRow::GbaCore => &[Platform::Gba],
+            QuickRow::NesCore => &[Platform::Nes],
+            QuickRow::SnesCore => &[Platform::Snes],
+            _ => &[Platform::Gb, Platform::Gbc],
+        };
+        let pair = Core::pair(platforms[0]);
+        let to = match self.default_core(platforms[0]) == pair[0] {
+            true => pair[1],
+            false => pair[0],
+        };
+        for &platform in platforms {
+            let written = slot_store::write_default_core(&root, platform, to);
+            if let Err(e) = &written {
+                eprintln!("slot: core: could not write the default core: {e}");
+            }
+            self.card_writes.wrote("selected_core.txt", &written);
+        }
     }
 
     pub fn lid_off_min(&self) -> u8 {
@@ -1339,6 +1862,20 @@ impl App {
         }
     }
 
+    /// The fade shadow of a mould without a setter of its own (the NES and SNES carts).
+    pub fn set_mould_shadow(&mut self, mould: slot_ui::Mould, face: TexId) {
+        for (_, shelf) in &mut self.shelves {
+            shelf.set_mould_shadow(mould, face);
+        }
+    }
+
+    /// The board behind a clear cart of that mould (the NES and SNES carts).
+    pub fn set_mould_backing(&mut self, mould: slot_ui::Mould, face: TexId) {
+        for (_, shelf) in &mut self.shelves {
+            shelf.set_mould_backing(mould, face);
+        }
+    }
+
     pub fn set_ground(&mut self, face: TexId) {
         self.ground = Some(face);
     }
@@ -1369,6 +1906,11 @@ impl App {
 
     pub fn clear_shelf_platform(&mut self) {
         self.shelf_platform = slot_ui::Printed::default();
+    }
+
+    /// The shelf's name has a face to draw; the game's title waits for it after a switch.
+    pub fn shelf_platform_drawn(&self) -> bool {
+        self.shelf_platform.face.is_some()
     }
 
     pub fn slot_text(&self) -> Option<String> {
@@ -1426,7 +1968,14 @@ impl App {
         self.shelves
             .iter()
             .filter(|(r, _)| r.platform().is_some())
-            .flat_map(|(_, shelf)| shelf.carts.iter())
+            .flat_map(|(_, shelf)| {
+                shelf
+                    .carts
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| shelf.folder_at(*i).is_none())
+                    .map(|(_, cart)| cart)
+            })
     }
 
     pub fn seated_cart(&self) -> Option<&Cart> {
@@ -1466,6 +2015,14 @@ impl App {
                 .filter(|i| !screen.contains(i))
                 .map(|i| (self.shelf_at, i)),
         );
+        // A folder shows the first three carts of its own shelf.
+        let stacked: Vec<(usize, usize)> = wants
+            .iter()
+            .filter_map(|(at, i)| self.shelves[*at].1.folder_at(*i))
+            .flat_map(|f| self.stack_indices(f).into_iter().map(move |k| (f, k)))
+            .collect();
+        wants.retain(|(at, i)| self.shelves[*at].1.folder_at(*i).is_none());
+        wants.extend(stacked);
         wants
             .into_iter()
             .filter(|(at, i)| self.shelves[*at].1.face(*i).is_none())
@@ -1475,6 +2032,1224 @@ impl App {
                 on_screen: shelf == self.shelf_at && screen.contains(&index),
             })
             .collect()
+    }
+
+    pub fn shelf_epoch(&self) -> u64 {
+        self.shelf_epoch
+    }
+
+    fn prefs_of(&self, folder: usize) -> Option<&slot_store::FolderPrefs> {
+        self.folder_prefs
+            .iter()
+            .find(|(at, _)| *at == folder)
+            .map(|(_, p)| p)
+    }
+
+    fn folder_name(&self, folder: usize) -> Option<String> {
+        Some(
+            self.shelves
+                .get(folder)?
+                .1
+                .carts
+                .first()?
+                .folder()?
+                .to_string(),
+        )
+    }
+
+    fn folder_platform(&self, folder: usize) -> Option<Platform> {
+        self.shelves.get(folder)?.0.platform()
+    }
+
+    fn folder_key(&self, folder: usize) -> Option<String> {
+        Some(slot_store::folder_key(
+            self.folder_platform(folder)?,
+            &self.folder_name(folder)?,
+        ))
+    }
+
+    /// Reads every folder's settings and puts its games in the order it asks for.
+    fn load_folders(&mut self) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        self.folder_prefs = (0..self.shelves.len())
+            .filter(|at| matches!(self.shelves[*at].0, Rack::Folder(_)))
+            .filter_map(|at| {
+                Some((
+                    at,
+                    slot_store::read_folder_prefs(&root, &self.folder_key(at)?),
+                ))
+            })
+            .collect();
+        for at in self
+            .folder_prefs
+            .iter()
+            .map(|(at, _)| *at)
+            .collect::<Vec<_>>()
+        {
+            self.resort_folder(at);
+        }
+    }
+
+    /// Changes a folder's settings and writes them to the card.
+    fn change_prefs(&mut self, folder: usize, change: impl FnOnce(&mut slot_store::FolderPrefs)) {
+        let Some(key) = self.folder_key(folder) else {
+            return;
+        };
+        let Some((_, prefs)) = self.folder_prefs.iter_mut().find(|(at, _)| *at == folder) else {
+            return;
+        };
+        change(prefs);
+        if let Some(root) = &self.root {
+            if let Err(e) = slot_store::write_folder_prefs(root, &key, prefs) {
+                eprintln!("slot: folders: {key}: {e}");
+            }
+        }
+    }
+
+    /// Puts a folder's games in its chosen order, keeping the selected one selected.
+    fn resort_folder(&mut self, folder: usize) {
+        let Some(sort) = self.prefs_of(folder).map(|p| p.sort) else {
+            return;
+        };
+        let recents: Vec<(Platform, String)> = self
+            .state
+            .recents
+            .iter()
+            .map(|r| (r.platform, r.stem.clone()))
+            .collect();
+        let shelf = &self.shelves[folder].1;
+        let selected = shelf.carts.get(shelf.index).map(|c| c.stem.clone());
+        let mut carts = shelf.carts.clone();
+        let az = |c: &Cart| slot_store::sort_key(&c.stem);
+        match sort {
+            slot_store::FolderSort::Az => carts.sort_by_key(az),
+            slot_store::FolderSort::Platform => carts.sort_by_key(|c| (c.platform as u8, az(c))),
+            slot_store::FolderSort::Recent => carts.sort_by_key(|c| {
+                let played = recents
+                    .iter()
+                    .position(|(p, s)| *p == c.platform && *s == c.stem);
+                (played.unwrap_or(usize::MAX), az(c))
+            }),
+        }
+        if carts
+            .iter()
+            .map(|c| &c.stem)
+            .eq(shelf.carts.iter().map(|c| &c.stem))
+        {
+            return;
+        }
+        let old = self.shelves[folder].1.restock(carts);
+        self.orphaned.extend(old);
+        let shelf = &mut self.shelves[folder].1;
+        if let Some(i) = selected.and_then(|s| shelf.carts.iter().position(|c| c.stem == s)) {
+            shelf.select(i);
+        }
+        self.shelf_epoch += 1;
+    }
+
+    /// The folder's carts its stack shows: the cover in front, then the next ones on its shelf.
+    fn stack_indices(&self, folder: usize) -> Vec<usize> {
+        let carts = &self.shelves[folder].1.carts;
+        let cover = self
+            .prefs_of(folder)
+            .and_then(|p| p.cover.as_deref())
+            .and_then(|stem| carts.iter().position(|c| c.stem == stem))
+            .unwrap_or(0);
+        std::iter::once(cover)
+            .chain((0..carts.len()).filter(|i| *i != cover))
+            .take(STACK_CARTS)
+            .collect()
+    }
+
+    /// The paper a folder's name is written on: its own platform's, or the one it picked.
+    fn paper_of(&self, folder: usize) -> Option<Platform> {
+        let own = self.folder_platform(folder)?;
+        Some(
+            match self.prefs_of(folder).map(|p| p.paper).unwrap_or_default() {
+                slot_store::FolderPaper::Auto => own,
+                slot_store::FolderPaper::Light => Platform::Gba,
+                slot_store::FolderPaper::Cuts => Platform::Gb,
+                slot_store::FolderPaper::Deep => Platform::Gbc,
+            },
+        )
+    }
+
+    fn open_folder_menu(&mut self) {
+        let Some(folder) = self.selected_folder() else {
+            return;
+        };
+        let now = self.now();
+        self.folder_menu = Some(FolderMenu {
+            parent: self.shelf_at,
+            item: self.shelf().index,
+            folder,
+            row: 0,
+            first: 0,
+            opened: now,
+            closing: None,
+            glide: (0.0, now),
+            entry: None,
+        });
+        self.folder_sheet_stale = true;
+    }
+
+    fn folder_menu_rows(&self, folder: usize) -> Vec<slot_ui::MenuRow> {
+        let prefs = self.prefs_of(folder).cloned().unwrap_or_default();
+        let platform = self.folder_platform(folder).unwrap_or(Platform::Gba);
+        let carts = &self.shelves[folder].1.carts;
+        let cover = self
+            .stack_indices(folder)
+            .first()
+            .and_then(|i| carts.get(*i));
+        let core = self
+            .root
+            .as_ref()
+            .and_then(|root| slot_store::folder_core(root, &self.folder_key(folder)?, platform));
+        FolderRow::ALL
+            .iter()
+            .map(|row| {
+                let value = match row {
+                    FolderRow::Rename => String::new(),
+                    FolderRow::Cover => cover
+                        .map(|c| slot_ui::clean_label(&c.stem))
+                        .unwrap_or_default(),
+                    FolderRow::Sort => prefs.sort.text().to_string(),
+                    FolderRow::Core => core.map_or("Default", |c| c.text()).to_string(),
+                    FolderRow::Open => if prefs.open_last { "Last" } else { "First" }.to_string(),
+                    FolderRow::Paper => prefs.paper.text().to_string(),
+                };
+                slot_ui::MenuRow {
+                    label: row.label().to_string(),
+                    value,
+                    arrows: *row != FolderRow::Rename,
+                }
+            })
+            .collect()
+    }
+
+    fn folder_menu_input(&mut self, action: Action) {
+        let Some(menu) = self.folder_menu.clone() else {
+            return;
+        };
+        if menu.closing.is_some() {
+            return;
+        }
+        if menu.entry.is_some() {
+            return self.name_entry_input(action);
+        }
+        let row = FolderRow::ALL[menu.row];
+        match action {
+            Action::GbaDown(Btn::Up) => self.move_folder_row(-1),
+            Action::GbaDown(Btn::Down) => self.move_folder_row(1),
+            Action::GbaDown(Btn::Left) => self.change_folder_row(row, -1),
+            Action::GbaDown(Btn::Right) => self.change_folder_row(row, 1),
+            Action::GbaDown(Btn::A) if row == FolderRow::Rename => {
+                let name = self.folder_name(menu.folder).unwrap_or_default();
+                if let Some(m) = &mut self.folder_menu {
+                    m.entry = Some(NameEntry {
+                        name,
+                        lower: false,
+                        cursor: (0, 0),
+                    });
+                }
+                self.folder_sheet_stale = true;
+            }
+            Action::GbaDown(Btn::A) => self.change_folder_row(row, 1),
+            Action::GbaDown(Btn::B) | Action::GbaDown(Btn::Start) => {
+                let now = self.now();
+                if let Some(m) = &mut self.folder_menu {
+                    m.closing = Some(now);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn move_folder_row(&mut self, by: i32) {
+        let now = self.now();
+        let Some(m) = &mut self.folder_menu else {
+            return;
+        };
+        let rows = FolderRow::ALL.len() as i32;
+        let was = (m.row - m.first) as f32;
+        let from = glide_at(m.glide, was, now);
+        m.row = (m.row as i32 + by).rem_euclid(rows) as usize;
+        let shown = slot_ui::MENU_ROWS_SHOWN;
+        let first = m.first.clamp(m.row.saturating_sub(shown - 1), m.row);
+        if first != m.first {
+            m.first = first;
+            self.folder_sheet_stale = true;
+        }
+        let shift = m.first as f32 - (m.row as f32 - (m.row - m.first) as f32);
+        m.glide = (from - shift, now);
+    }
+
+    fn change_folder_row(&mut self, row: FolderRow, by: i32) {
+        let Some(folder) = self.folder_menu.as_ref().map(|m| m.folder) else {
+            return;
+        };
+        let step = |at: usize, n: usize| (at as i32 + by).rem_euclid(n as i32) as usize;
+        match row {
+            FolderRow::Rename => return,
+            FolderRow::Cover => {
+                let carts = &self.shelves[folder].1.carts;
+                let now = self.stack_indices(folder).first().copied().unwrap_or(0);
+                let stem = carts
+                    .get(step(now, carts.len().max(1)))
+                    .map(|c| c.stem.clone());
+                self.change_prefs(folder, |p| p.cover = stem);
+            }
+            FolderRow::Sort => {
+                let all = slot_store::FolderSort::ALL;
+                self.change_prefs(folder, |p| {
+                    let at = all.iter().position(|s| *s == p.sort).unwrap_or(0);
+                    p.sort = all[step(at, all.len())];
+                });
+                self.resort_folder(folder);
+            }
+            FolderRow::Core => {
+                let (Some(root), Some(key), Some(platform)) = (
+                    self.root.clone(),
+                    self.folder_key(folder),
+                    self.folder_platform(folder),
+                ) else {
+                    return;
+                };
+                let mut choices = vec![None];
+                choices.extend(
+                    Core::pair(platform)
+                        .into_iter()
+                        .filter(|c| crate::core::installed(&root, *c))
+                        .map(Some),
+                );
+                let now = slot_store::folder_core(&root, &key, platform);
+                let at = choices.iter().position(|c| *c == now).unwrap_or(0);
+                let to = choices[step(at, choices.len())];
+                if let Err(e) = slot_store::write_folder_core(&root, &key, to) {
+                    eprintln!("slot: folders: {key}: core: {e}");
+                }
+            }
+            FolderRow::Open => self.change_prefs(folder, |p| p.open_last = !p.open_last),
+            FolderRow::Paper => {
+                let all = slot_store::FolderPaper::ALL;
+                self.change_prefs(folder, |p| {
+                    let at = all.iter().position(|v| *v == p.paper).unwrap_or(0);
+                    p.paper = all[step(at, all.len())];
+                });
+                self.drop_folder_papers(folder);
+            }
+        }
+        self.folder_sheet_stale = true;
+    }
+
+    /// Lets go of a folder's paper and name strip, to be drawn again on its new paper or name.
+    fn drop_folder_papers(&mut self, folder: usize) {
+        for at in 0..self.shelves.len() {
+            for i in 0..self.shelves[at].1.carts.len() {
+                if self.shelves[at].1.folder_at(i) != Some(folder) {
+                    continue;
+                }
+                let stack = self.shelves[at].1.stack(i).copied().unwrap_or_default();
+                self.orphaned.extend(stack.paper);
+                self.shelves[at].1.set_stack(
+                    i,
+                    Stack {
+                        paper: None,
+                        ..stack
+                    },
+                );
+            }
+        }
+        let (gone, kept): (Vec<_>, Vec<_>) = self
+            .folder_titles
+            .drain(..)
+            .partition(|(at, _, _)| *at == folder);
+        self.orphaned
+            .extend(gone.into_iter().map(|(_, tex, _)| tex));
+        self.folder_titles = kept;
+    }
+
+    fn name_entry_input(&mut self, action: Action) {
+        let Some(entry) = self.folder_menu.as_mut().and_then(|m| m.entry.as_mut()) else {
+            return;
+        };
+        let mut done = None;
+        match action {
+            Action::GbaDown(Btn::Up) => entry.cursor = slot_ui::step_cursor(entry.cursor, 0, -1),
+            Action::GbaDown(Btn::Down) => entry.cursor = slot_ui::step_cursor(entry.cursor, 0, 1),
+            Action::GbaDown(Btn::Left) => entry.cursor = slot_ui::step_cursor(entry.cursor, -1, 0),
+            Action::GbaDown(Btn::Right) => entry.cursor = slot_ui::step_cursor(entry.cursor, 1, 0),
+            Action::GbaDown(Btn::Start) => entry.cursor = slot_ui::END_KEY,
+            Action::GbaDown(Btn::Select) => entry.lower = !entry.lower,
+            Action::GbaDown(Btn::B) => {
+                if entry.name.pop().is_none() {
+                    done = Some(None);
+                }
+            }
+            Action::GbaDown(Btn::A) => match slot_ui::entry_key(entry.lower, entry.cursor) {
+                slot_ui::EntryKey::Char(c) => {
+                    if entry.name.chars().count() < slot_ui::NAME_MAX {
+                        entry.name.push(c);
+                    }
+                }
+                slot_ui::EntryKey::Letters => entry.lower = !entry.lower,
+                slot_ui::EntryKey::End => done = Some(Some(entry.name.trim().to_string())),
+            },
+            _ => return,
+        }
+        self.folder_sheet_stale = true;
+        let Some(named) = done else {
+            return;
+        };
+        let folder = self.folder_menu.as_ref().map(|m| m.folder);
+        if let (Some(name), Some(folder)) = (named, folder) {
+            if !name.is_empty() && Some(&name) != self.folder_name(folder).as_ref() {
+                if let Err(e) = self.rename_folder(folder, &name) {
+                    eprintln!("slot: folders: rename to {name:?}: {e}");
+                    return self.refuse();
+                }
+            }
+        }
+        if let Some(m) = &mut self.folder_menu {
+            m.entry = None;
+        }
+    }
+
+    /// Renames the folder on the card and everywhere the shelves keep its path.
+    fn rename_folder(&mut self, folder: usize, name: &str) -> std::io::Result<()> {
+        let (Some(root), Some(old_key), Some(platform)) = (
+            self.root.clone(),
+            self.folder_key(folder),
+            self.folder_platform(folder),
+        ) else {
+            return Err(std::io::ErrorKind::NotFound.into());
+        };
+        let Some(old) = self.shelves[folder]
+            .1
+            .carts
+            .first()
+            .and_then(|c| c.rom.parent().map(Path::to_path_buf))
+        else {
+            return Err(std::io::ErrorKind::NotFound.into());
+        };
+        let new = old.with_file_name(name);
+        if new.exists() {
+            return Err(std::io::ErrorKind::AlreadyExists.into());
+        }
+        std::fs::rename(&old, &new)?;
+        let new_key = slot_store::folder_key(platform, name);
+        if let Err(e) = slot_store::rename_folder_prefs(&root, &old_key, &new_key, platform) {
+            eprintln!("slot: folders: {old_key} -> {new_key}: {e}");
+        }
+        for (_, shelf) in self.shelves.iter_mut() {
+            for cart in shelf.carts.iter_mut() {
+                if cart.rom == old {
+                    cart.rom = new.clone();
+                    cart.stem = name.to_string();
+                    cart.title = name.to_string();
+                } else if cart.rom.parent() == Some(old.as_path()) {
+                    if let Some(file) = cart.rom.file_name() {
+                        cart.rom = new.join(file);
+                    }
+                }
+            }
+        }
+        self.drop_folder_papers(folder);
+        self.resort_parent_of(folder);
+        Ok(())
+    }
+
+    /// Puts a renamed folder back in name order on its platform's shelf.
+    fn resort_parent_of(&mut self, folder: usize) {
+        let Some((at, _)) = self.shelves.iter().enumerate().find_map(|(at, (_, s))| {
+            (0..s.carts.len())
+                .find(|i| s.folder_at(*i) == Some(folder))
+                .map(|i| (at, i))
+        }) else {
+            return;
+        };
+        let shelf = &self.shelves[at].1;
+        let links: Vec<(PathBuf, usize)> = (0..shelf.carts.len())
+            .filter_map(|i| Some((shelf.carts[i].rom.clone(), shelf.folder_at(i)?)))
+            .collect();
+        let mut carts = shelf.carts.clone();
+        carts.sort_by_key(|c| {
+            let folder = links.iter().any(|(rom, _)| *rom == c.rom);
+            (!folder, slot_store::sort_key(&c.stem))
+        });
+        let old = self.shelves[at].1.restock(carts);
+        self.orphaned.extend(old);
+        let shelf = &mut self.shelves[at].1;
+        for i in 0..shelf.carts.len() {
+            if let Some((_, f)) = links.iter().find(|(rom, _)| *rom == shelf.carts[i].rom) {
+                shelf.set_folder(i, *f);
+            }
+        }
+        let item = (0..shelf.carts.len()).find(|i| shelf.folder_at(*i) == Some(folder));
+        if let Some(i) = item {
+            shelf.select(i);
+        }
+        if let (Some(m), Some(i)) = (&mut self.folder_menu, item) {
+            m.item = i;
+        }
+        self.shelf_epoch += 1;
+    }
+
+    /// The menu or name entry sheet to draw again: its paper, the folder's name, and either the
+    /// rows from the first shown or the name so far.
+    pub fn folder_sheet_want(&mut self) -> Option<FolderSheet> {
+        if !std::mem::take(&mut self.folder_sheet_stale) {
+            return None;
+        }
+        let m = self.folder_menu.as_ref()?;
+        let paper = self.paper_of(m.folder)?;
+        Some(match &m.entry {
+            Some(e) => FolderSheet::Entry {
+                paper,
+                name: e.name.clone(),
+                lower: e.lower,
+            },
+            None => FolderSheet::Menu {
+                paper,
+                name: self.folder_name(m.folder).unwrap_or_default(),
+                rows: self.folder_menu_rows(m.folder),
+                first: m.first,
+            },
+        })
+    }
+
+    pub fn set_folder_sheet(&mut self, entry: bool, tex: TexId) {
+        let slot = match entry {
+            true => &mut self.folder_entry_face,
+            false => &mut self.folder_menu_face,
+        };
+        if let Some(old) = slot.replace(tex) {
+            self.orphaned.push(old);
+        }
+    }
+
+    pub fn wants_folder_ui(&self) -> bool {
+        self.folder_menu_loop.is_none()
+            && self
+                .shelves
+                .iter()
+                .any(|(r, _)| matches!(r, Rack::Folder(_)))
+    }
+
+    pub fn set_folder_ui(
+        &mut self,
+        menu_loop: TexId,
+        key_loops: [TexId; 2],
+        legend: Vec<(TexId, u32)>,
+        entry_legend: Vec<(TexId, u32)>,
+    ) {
+        self.folder_menu_loop = Some(menu_loop);
+        self.folder_key_loops = key_loops.map(Some);
+        self.folder_legend = legend;
+        self.entry_legend = entry_legend;
+    }
+
+    /// The menu over the shelf: neighbours away, the stack parked small at the top, its paper
+    /// grown into the sheet and its band into the loop; or Rename's name entry.
+    fn draw_folder_menu(&self, out: &mut Vec<Draw>) {
+        let Some(m) = &self.folder_menu else {
+            return;
+        };
+        let canvas = self.canvas();
+        let now = self.now();
+        let open = match m.closing {
+            Some(at) => 1.0 - (now.saturating_sub(at) as f32 / FOLDER_MENU_CLOSE_MS).min(1.0),
+            None => (now.saturating_sub(m.opened) as f32 / FOLDER_MENU_OPEN_MS).min(1.0),
+        };
+        let open = ease(open);
+        let parent = &self.shelves[m.parent].1;
+        let Some(cover) = parent.carts.get(m.item) else {
+            return;
+        };
+        let platform = cover.platform;
+        parent.draw_row(canvas, Some(&cover.stem), 0.0, open, 1.0, out);
+
+        let (rest, scale) = parent.selected_at(canvas);
+        let shelf_slot = shelf_cart_of(platform, rest, scale);
+        let parked = Placed {
+            x: canvas.w / 2.0 - shelf_slot.w * FOLDER_PARKED_SCALE / scale / 2.0,
+            y: FOLDER_PARKED_Y - shelf_slot.h * FOLDER_PARKED_SCALE / scale / 2.0,
+            w: shelf_slot.w * FOLDER_PARKED_SCALE / scale,
+            h: shelf_slot.h * FOLDER_PARKED_SCALE / scale,
+        };
+        let slot = lerp_placed(shelf_slot, parked, open);
+        let stack = parent.stack(m.item).copied().unwrap_or_default();
+        slot_ui::draw_stack(
+            platform,
+            slot,
+            &Stack {
+                paper: None,
+                band: None,
+                ..stack
+            },
+            1.0,
+            out,
+        );
+
+        let poses = stack_poses(platform, shelf_slot);
+        let sheet = slot_ui::menu_pose(canvas);
+        let paper = Pose {
+            at: lerp_placed(poses.paper.at, sheet.at, open),
+            turn: poses.paper.turn + (sheet.turn - poses.paper.turn) * open,
+        };
+        if let Some(tex) = stack.paper {
+            draw_pose(paper, tex, 1.0 - open, out);
+        }
+        let entering = m.entry.is_some();
+        if let Some(tex) = self.folder_menu_face.filter(|_| !entering) {
+            draw_pose(paper, tex, open, out);
+        }
+        let slot_now = glide_at(m.glide, (m.row - m.first) as f32, now);
+        let ring = slot_ui::menu_loop_pose(canvas, slot_now);
+        let band = Pose {
+            at: lerp_placed(poses.band.at, ring.at, open),
+            turn: poses.band.turn + (ring.turn - poses.band.turn) * open,
+        };
+        if let Some(tex) = stack.band {
+            draw_pose(band, tex, 1.0 - open, out);
+        }
+        if let Some(tex) = self.folder_menu_loop.filter(|_| !entering) {
+            draw_pose(band, tex, open, out);
+        }
+        if let Some(e) = &m.entry {
+            if let Some(tex) = self.folder_entry_face {
+                draw_pose(slot_ui::entry_pose(canvas), tex, 1.0, out);
+            }
+            let (pose, wide) = slot_ui::entry_loop_pose(canvas, e.cursor);
+            if let Some(tex) = self.folder_key_loops[usize::from(wide)] {
+                draw_pose(pose, tex, 1.0, out);
+            }
+            self.draw_legend_row(&self.entry_legend, &[true; 4], 1.0, out);
+            return;
+        }
+        let changes = FolderRow::ALL[m.row] != FolderRow::Rename;
+        self.draw_legend_row(&self.folder_legend, &[true, changes, true], open, out);
+    }
+
+    /// A centred row of footer legends at the core picker's height, those `shown`.
+    fn draw_legend_row(
+        &self,
+        faces: &[(TexId, u32)],
+        shown: &[bool],
+        alpha: f32,
+        out: &mut Vec<Draw>,
+    ) {
+        let seen = |w: u32| w.saturating_sub(HINT_EDGE) as f32;
+        let row: Vec<&(TexId, u32)> = faces
+            .iter()
+            .zip(shown)
+            .filter(|(_, s)| **s)
+            .map(|(f, _)| f)
+            .collect();
+        let total: f32 = row.iter().map(|(_, w)| seen(*w)).sum::<f32>()
+            + CORE_LEGEND_GAP * row.len().saturating_sub(1) as f32;
+        let mut x = self.canvas().centred(total);
+        for (tex, w) in row {
+            out.push(Draw::Tex {
+                x: x.round(),
+                y: CORE_LEGEND_Y,
+                w: *w as f32,
+                h: MOUTH_H,
+                tex: *tex,
+                alpha,
+            });
+            x += seen(*w) + CORE_LEGEND_GAP;
+        }
+    }
+
+    fn on_extras(&self) -> bool {
+        self.shelf_at == EXTRAS_AT && matches!(self.phase, Phase::Shelf)
+    }
+
+    fn selected_extra(&self) -> slot_ui::Extra {
+        slot_ui::Extra::ALL[self.extra_pos.rem_euclid(3) as usize]
+    }
+
+    fn extra_key(item: slot_ui::Extra) -> &'static str {
+        match item {
+            slot_ui::Extra::Activity => "activity",
+            slot_ui::Extra::Lucky => "lucky",
+            slot_ui::Extra::Unplayed => "unplayed",
+        }
+    }
+
+    /// Whether a game was ever started: a save or state on the card, a recent, or play logged.
+    fn ever_played(&self, cart: &Cart, logged: &[slot_store::Session]) -> bool {
+        let game = Recent {
+            platform: cart.platform,
+            stem: cart.stem.clone(),
+        };
+        if self.state.recents.contains(&game) || logged.iter().any(|s| s.game == game) {
+            return true;
+        }
+        let Some(root) = &self.root else {
+            return false;
+        };
+        let saves = crate::root::saves_dir(root).join(cart.platform.dir_name());
+        ["srm", "sav"]
+            .iter()
+            .any(|ext| saves.join(format!("{}.{ext}", cart.stem)).is_file())
+    }
+
+    /// The games an Extras pick draws from, for its system setting.
+    fn extra_pool(&self, item: slot_ui::Extra) -> Vec<Recent> {
+        let system = self
+            .root
+            .as_ref()
+            .and_then(|root| slot_store::extras_system(root, Self::extra_key(item)));
+        let logged = self
+            .root
+            .as_ref()
+            .map(|r| slot_store::read_activity(r))
+            .unwrap_or_default();
+        self.carts()
+            .filter(|c| system.is_none_or(|p| c.platform == p))
+            .filter(|c| item != slot_ui::Extra::Unplayed || !self.ever_played(c, &logged))
+            .map(|c| Recent {
+                platform: c.platform,
+                stem: c.stem.clone(),
+            })
+            .collect()
+    }
+
+    /// A on an Extras item. Get lucky and Never played put a game from the deck straight in.
+    fn open_extra(&mut self) {
+        let item = self.selected_extra();
+        if item == slot_ui::Extra::Activity {
+            return self.open_report();
+        }
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let pool = self.extra_pool(item);
+        let mut deck = slot_store::read_suggested(&root);
+        let roll = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let Some(game) = slot_store::pick(&pool, &mut deck, roll) else {
+            return self.refuse();
+        };
+        if let Err(e) = slot_store::write_suggested(&root, &deck) {
+            eprintln!("slot: extras: {e}");
+        }
+        self.extras_stale = true;
+        self.extra_motion = Some((item, self.now(), game));
+    }
+
+    /// How long a pick plays before its game goes in: the dice fall, or the bubble tears off.
+    fn extra_motion_ms(item: slot_ui::Extra) -> f32 {
+        match item {
+            slot_ui::Extra::Lucky => 950.0,
+            _ => 750.0,
+        }
+    }
+
+    /// Once a pick has played out, its game starts at once, unseen, as a game left in the slot
+    /// does at power on. It goes in from its own shelf, which is where ejecting comes back to.
+    fn finish_extra_motion(&mut self) {
+        let Some((item, start, _)) = &self.extra_motion else {
+            return;
+        };
+        if (self.now().saturating_sub(*start) as f32) < Self::extra_motion_ms(*item) {
+            return;
+        }
+        let Some((_, _, game)) = self.extra_motion.take() else {
+            return;
+        };
+        let Some((at, i)) = self.seat_of(&game.stem, Some(game.platform)) else {
+            return;
+        };
+        self.go_to_shelf(at);
+        self.shelves[at].1.select(i);
+        self.insert(!self.state.eject_save);
+        if let Phase::Inserting { resumed, t, .. } = &mut self.phase {
+            *resumed = true;
+            *t = INSERT_S;
+            self.straight_in = true;
+            self.screen = 1.0;
+            self.lift = 1.0;
+        }
+    }
+
+    /// The receipt's week and the blister pack's count, to draw them again when stale.
+    pub fn extras_want(&mut self) -> Option<(ExtrasWeek, usize)> {
+        if !self.extras_stale || self.root.is_none() {
+            return None;
+        }
+        self.extras_stale = false;
+        let root = self.root.clone()?;
+        let offset = i32::from(self.state.utc_offset_min);
+        let now = self.power.as_ref().map_or_else(system_secs, |p| p.now());
+        let today = slot_store::local_day(now, offset);
+        let a = slot_store::activity(&slot_store::read_activity(&root), today, offset);
+        let monday = today - slot_store::weekday(today) as i64;
+        let (_, m0, d0) = slot_store::civil(monday);
+        let (_, m1, d1) = slot_store::civil(monday + 6);
+        let range = match m0 == m1 {
+            true => format!("{} {d0}–{d1}", MONTHS[m0 as usize - 1]),
+            false => format!(
+                "{} {d0}–{} {d1}",
+                MONTHS[m0 as usize - 1],
+                MONTHS[m1 as usize - 1]
+            ),
+        };
+        let week = ExtrasWeek {
+            range,
+            days: a.week,
+            labels: a.week.map(|s| {
+                if s >= 60 {
+                    slot_store::play_time_text(s)
+                } else {
+                    String::new()
+                }
+            }),
+            total: slot_store::play_time_text(a.this_week),
+        };
+        Some((week, self.extra_pool(slot_ui::Extra::Unplayed).len()))
+    }
+
+    pub fn wants_extra_parts(&self) -> bool {
+        self.extra_bubble.is_none()
+    }
+
+    pub fn set_extra_parts(&mut self, dice: [Option<TexId>; 3], bubble: Option<TexId>) {
+        self.extra_dice = dice;
+        self.extra_bubble = bubble;
+    }
+
+    pub fn set_extra_faces(&mut self, faces: [Option<TexId>; 3]) {
+        for (slot, tex) in self.extra_faces.iter_mut().zip(faces) {
+            if let Some(tex) = tex {
+                if let Some(old) = slot.replace(tex) {
+                    self.orphaned.push(old);
+                }
+            }
+        }
+    }
+
+    /// The Extras row: the selected item centred, its neighbours half off the screen.
+    fn draw_extras(&self, out: &mut Vec<Draw>) {
+        let canvas = self.canvas();
+        let at = self.extra_scroll.round() as i64;
+        for pos in [at - 1, at + 1, at] {
+            let offset = pos as f32 - self.extra_scroll;
+            let item = slot_ui::Extra::ALL[pos.rem_euclid(3) as usize];
+            let Some(tex) = self.extra_faces[pos.rem_euclid(3) as usize] else {
+                continue;
+            };
+            let mut at = slot_ui::extra_box(canvas, item, offset);
+            let (aside, shown) = self.report_aside(offset);
+            at.x += aside;
+            let alpha = self.extra_fade() * shown;
+            slot_ui::draw_extra(item, at, tex, alpha, out);
+            self.draw_extra_parts(item, at, alpha, out);
+        }
+    }
+
+    /// The dice resting on the slate, and the bubble over the blister pack's card.
+    fn draw_extra_parts(&self, item: slot_ui::Extra, at: Placed, alpha: f32, out: &mut Vec<Draw>) {
+        // How far the pick has come, when this item is the one picking.
+        let moved = match &self.extra_motion {
+            Some((picking, start, _)) if *picking == item => {
+                self.now().saturating_sub(*start) as f32
+            }
+            _ => 0.0,
+        };
+        let k = at.w / slot_ui::extra_box(self.canvas(), item, 0.0).w;
+        match item {
+            slot_ui::Extra::Lucky => {
+                // Off the slate and down the screen, each spinning its own way (design: 760 ms).
+                const FALL: [(f32, f32, f32); 3] = [
+                    (-60.0, 330.0, 760.0),
+                    (10.0, 310.0, -980.0),
+                    (70.0, 340.0, 1120.0),
+                ];
+                let t = ease_out((moved / 760.0).min(1.0));
+                for (die, tex) in self.extra_dice.iter().enumerate() {
+                    let Some(tex) = tex else {
+                        continue;
+                    };
+                    let rest = slot_ui::die_rest(at, die);
+                    let (dx, dy, spin) = FALL[die];
+                    let pose = Pose {
+                        at: Placed {
+                            x: rest.x + dx * k * t,
+                            y: rest.y + dy * k * t,
+                            ..rest
+                        },
+                        turn: (spin * t).to_radians(),
+                    };
+                    draw_pose(pose, *tex, alpha, out);
+                }
+            }
+            slot_ui::Extra::Unplayed => {
+                let Some(tex) = self.extra_bubble else {
+                    return;
+                };
+                // Torn off up and to the right (design: 420 ms).
+                let t = ease_out((moved / 420.0).min(1.0));
+                let mut pose = slot_ui::bubble_pose(at);
+                pose.at.x += 150.0 * k * t;
+                pose.at.y -= 230.0 * k * t;
+                pose.turn += 38f32.to_radians() * t;
+                draw_pose(pose, tex, alpha * (1.0 - t), out);
+            }
+            slot_ui::Extra::Activity => {}
+        }
+    }
+
+    /// The row fades as a pick finishes: from 600 ms for the dice, 420 ms for the bubble.
+    fn extra_fade(&self) -> f32 {
+        let Some((item, start, _)) = &self.extra_motion else {
+            return 1.0;
+        };
+        let from = match item {
+            slot_ui::Extra::Lucky => 600.0,
+            _ => 420.0,
+        };
+        let gone = self.now().saturating_sub(*start) as f32 - from;
+        1.0 - (gone / (Self::extra_motion_ms(*item) - from)).clamp(0.0, 1.0)
+    }
+
+    fn selected_game(&self) -> Option<Recent> {
+        let cart = self.shelf().carts.get(self.shelf().index)?;
+        Some(Recent {
+            platform: cart.platform,
+            stem: cart.stem.clone(),
+        })
+    }
+
+    /// The game whose delete prompt needs its faces: its name, to ask about it by name.
+    pub fn game_delete_want(&self) -> Option<String> {
+        let game = self
+            .game_delete
+            .as_ref()
+            .filter(|_| self.game_delete_faces.is_empty())?;
+        Some(slot_ui::clean_label(&game.stem))
+    }
+
+    pub fn set_game_delete_faces(&mut self, faces: Vec<(TexId, u32, u32)>) {
+        self.game_delete_faces = faces;
+    }
+
+    fn forget_game_delete(&mut self) {
+        self.game_delete = None;
+        let faces = std::mem::take(&mut self.game_delete_faces);
+        self.orphaned
+            .extend(faces.into_iter().map(|(tex, _, _)| tex));
+    }
+
+    /// Takes a game off the card: its rom, its label and cheats, its own settings and every list
+    /// that names it. Its saves and states stay. A folder left without games goes with it.
+    fn delete_game(&mut self, game: &Recent) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let Some(cart) = self
+            .carts()
+            .find(|c| c.platform == game.platform && c.stem == game.stem)
+            .cloned()
+        else {
+            return;
+        };
+        if let Err(e) = std::fs::remove_file(&cart.rom) {
+            eprintln!("slot: delete {}: {e}", cart.rom.display());
+            return self.refuse();
+        }
+        let system = cart.platform.dir_name();
+        let extras = [
+            cart.label.clone(),
+            Some(
+                root.join("Cheats")
+                    .join(system)
+                    .join(format!("{}.cht", cart.stem)),
+            ),
+        ];
+        for path in extras.into_iter().flatten() {
+            if path.is_file() {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    eprintln!("slot: delete {}: {e}", path.display());
+                }
+            }
+        }
+        let picture = crate::video_mode::video_mode_key(&cart.stem, cart.platform);
+        for (file, key) in [
+            (slot_store::SELECTED_CORE_FILE, cart.stem.as_str()),
+            (crate::video_mode::VIDEO_MODE_FILE, picture.as_str()),
+        ] {
+            if let Err(e) = slot_store::ini::put(&root, file, key, None) {
+                eprintln!("slot: delete: {file}: {e}");
+            }
+        }
+        let mut deck = slot_store::read_suggested(&root);
+        deck.retain(|g| g != game);
+        if let Err(e) = slot_store::write_suggested(&root, &deck) {
+            eprintln!("slot: delete: {e}");
+        }
+        self.state.recents.retain(|g| g != game);
+        self.state.favorites.retain(|g| g != game);
+        if self.state.shelf_cart.as_ref() == Some(game) {
+            self.state.shelf_cart = None;
+        }
+        self.persist();
+        if let Some(dir) = cart.rom.parent().filter(|_| cart.folder().is_some()) {
+            // Only an empty folder goes; anything else in it keeps it.
+            let _ = std::fs::remove_dir(dir);
+        }
+        self.core_picker = None;
+        self.take_off_shelves(game);
+        self.restock_recents();
+        self.restock_favorites();
+        self.extras_stale = true;
+    }
+
+    /// Takes a deleted game off its shelf, and a folder it emptied off the shelf it stood on.
+    fn take_off_shelves(&mut self, game: &Recent) {
+        let seats: Vec<(usize, usize)> = (0..self.shelves.len())
+            .filter(|at| self.shelves[*at].0.platform().is_some())
+            .filter_map(|at| {
+                let shelf = &self.shelves[at].1;
+                (0..shelf.carts.len())
+                    .find(|i| {
+                        shelf.folder_at(*i).is_none()
+                            && shelf.carts[*i].platform == game.platform
+                            && shelf.carts[*i].stem == game.stem
+                    })
+                    .map(|i| (at, i))
+            })
+            .collect();
+        for (at, i) in seats {
+            self.remove_from_shelf(at, i);
+            if self.shelves[at].1.carts.is_empty() && matches!(self.shelves[at].0, Rack::Folder(_))
+            {
+                let parent = self.shelves.iter().enumerate().find_map(|(p, (_, s))| {
+                    (0..s.carts.len())
+                        .find(|j| s.folder_at(*j) == Some(at))
+                        .map(|j| (p, j))
+                });
+                if let Some((p, j)) = parent {
+                    if self.shelf_at == at {
+                        self.go_to_shelf(p);
+                    }
+                    self.remove_from_shelf(p, j);
+                }
+            }
+        }
+        if self.shelf().carts.is_empty() && self.shelf_at != EXTRAS_AT {
+            let to = self.next_shelf(1).unwrap_or(0);
+            self.go_to_shelf(to);
+        }
+    }
+
+    /// Takes the cart at `i` off shelf `at`, keeping its folders tied to their games.
+    fn remove_from_shelf(&mut self, at: usize, i: usize) {
+        let shelf = &self.shelves[at].1;
+        let links: Vec<(PathBuf, usize)> = (0..shelf.carts.len())
+            .filter_map(|k| Some((shelf.carts[k].rom.clone(), shelf.folder_at(k)?)))
+            .collect();
+        let mut carts = shelf.carts.clone();
+        carts.remove(i);
+        let old = self.shelves[at].1.restock(carts);
+        self.orphaned.extend(old);
+        let shelf = &mut self.shelves[at].1;
+        for k in 0..shelf.carts.len() {
+            if let Some((_, f)) = links.iter().find(|(rom, _)| *rom == shelf.carts[k].rom) {
+                shelf.set_folder(k, *f);
+            }
+        }
+        if !shelf.carts.is_empty() {
+            shelf.select(i.min(shelf.carts.len() - 1));
+        }
+        self.shelf_epoch += 1;
+    }
+
+    /// Folders on any shelf still without their paper: shelf, entry, platform and name.
+    pub fn folder_paper_wants(&self) -> Vec<(usize, usize, Platform, Platform, String)> {
+        let mut out = Vec::new();
+        for (at, (_, shelf)) in self.shelves.iter().enumerate() {
+            for (i, cart) in shelf.carts.iter().enumerate() {
+                let bare = shelf.stack(i).is_some_and(|s| s.paper.is_none());
+                if let (Some(f), true) = (shelf.folder_at(i), bare) {
+                    let paper = self.paper_of(f).unwrap_or(cart.platform);
+                    out.push((at, i, cart.platform, paper, cart.stem.clone()));
+                }
+            }
+        }
+        out
+    }
+
+    pub fn set_folder_paper(&mut self, shelf: usize, index: usize, tex: TexId) {
+        if let Some((_, s)) = self.shelves.get_mut(shelf) {
+            let stack = s.stack(index).copied().unwrap_or_default();
+            s.set_stack(
+                index,
+                Stack {
+                    paper: Some(tex),
+                    ..stack
+                },
+            );
+        }
+    }
+
+    pub fn wants_folder_band(&self) -> bool {
+        self.folder_band.is_none()
+            && self
+                .shelves
+                .iter()
+                .any(|(r, _)| matches!(r, Rack::Folder(_)))
+    }
+
+    pub fn set_folder_band(&mut self, tex: TexId) {
+        self.folder_band = Some(tex);
+    }
+
+    /// The opened folder, when its name strip is still to be made: its shelf and name.
+    pub fn folder_title_want(&self) -> Option<(usize, String)> {
+        if !self.in_folder()
+            || self
+                .folder_titles
+                .iter()
+                .any(|(at, _, _)| *at == self.shelf_at)
+        {
+            return None;
+        }
+        let name = self.shelf().carts.first()?.folder()?.to_string();
+        Some((self.shelf_at, name))
+    }
+
+    pub fn set_folder_title(&mut self, shelf: usize, tex: TexId, w: u32) {
+        self.folder_titles.push((shelf, tex, w));
+    }
+
+    /// Copies each folder's first carts' faces onto its stack, as they come and go.
+    pub fn refresh_folder_stacks(&mut self) {
+        let band = self.folder_band;
+        for at in 0..self.shelves.len() {
+            for i in 0..self.shelves[at].1.carts.len() {
+                let Some(f) = self.shelves[at].1.folder_at(i) else {
+                    continue;
+                };
+                let picks = self.stack_indices(f);
+                let folder = &self.shelves[f].1;
+                let carts = [0, 1, 2].map(|k| picks.get(k).and_then(|i| folder.face(*i)));
+                let paper = self.shelves[at].1.stack(i).and_then(|s| s.paper);
+                self.shelves[at]
+                    .1
+                    .set_stack(i, Stack { carts, paper, band });
+            }
+        }
+    }
+
+    fn draw_folder_title(&self, folder: usize, alpha: f32, out: &mut Vec<Draw>) {
+        let Rack::Folder(platform) = self.shelves[folder].0 else {
+            return;
+        };
+        let Some(&(_, tex, face_w)) = self.folder_titles.iter().find(|(at, _, _)| *at == folder)
+        else {
+            return;
+        };
+        let (w, h) = folder_title_size(face_w);
+        let top = match platform {
+            // The NES and SNES folders use the GBA's title height until their own art sets one.
+            Platform::Gba | Platform::Nes | Platform::Snes => FOLDER_TITLE_Y_GBA,
+            Platform::Gb | Platform::Gbc => FOLDER_TITLE_Y_GB,
+        };
+        out.push(Draw::Turned {
+            x: self.canvas().centred(w),
+            y: top - (h - 40.0) / 2.0,
+            w,
+            h,
+            tex,
+            alpha,
+            turn: FOLDER_TITLE_TURN.to_radians(),
+        });
+    }
+
+    /// The stack coming apart into its shelf (design: band off, paper off, carts lift and fan
+    /// out, then the name strip), or, closing, the same backwards.
+    fn draw_folder_motion(&self, out: &mut Vec<Draw>) {
+        let Some((m, t)) = self.folder_moving() else {
+            return;
+        };
+        let canvas = self.canvas();
+        let phase = |from: f32, span: f32| ease(((t - from) / span).clamp(0.0, 1.0));
+        let parent = &self.shelves[m.parent].1;
+        let folder = &self.shelves[m.folder].1;
+        let Some(cover) = parent.carts.get(m.item) else {
+            return;
+        };
+        let platform = cover.platform;
+        parent.draw_row(canvas, Some(&cover.stem), 0.0, phase(0.0, 420.0), 1.0, out);
+
+        let (rest, scale) = parent.selected_at(canvas);
+        let poses = stack_poses(platform, shelf_cart_of(platform, rest, scale));
+        let stack = parent.stack(m.item).copied().unwrap_or_default();
+        let (bw, bh) = shelf_box(platform);
+        let in_row = |offset: f32, scale: f32| Placed {
+            x: canvas.w / 2.0 + offset * bw - bw * scale / 2.0,
+            y: slot_ui::foot_y(bh) - bh * scale,
+            w: bw * scale,
+            h: bh * scale,
+        };
+        let n = folder.carts.len();
+        let (lift, fan) = (phase(240.0, 320.0) * FOLDER_LIFT, phase(480.0, 560.0));
+        // The cover lands in the middle, the next cart on its right; the third is the left
+        // neighbour only when the folder holds exactly three.
+        let third = if n == 3 { -1.0 } else { 2.0 };
+        let targets = [(0.0, 1.0), (1.0, SIDE_CART), (third, SIDE_CART)];
+        if n >= 2 && n != 3 {
+            if let Some(tex) = folder.face(n - 1) {
+                let at = in_row(-1.0, SIDE_CART);
+                draw_pose(Pose { at, turn: 0.0 }, tex, fan, out);
+            }
+        }
+        for k in (0..3).rev() {
+            let Some(tex) = stack.carts[k] else {
+                continue;
+            };
+            let from = poses.carts[k];
+            let lifted = Placed {
+                y: from.at.y - lift,
+                ..from.at
+            };
+            let (offset, scale) = targets[k];
+            let at = lerp_placed(lifted, in_row(offset, scale), fan);
+            let turn = from.turn * (1.0 - fan);
+            draw_pose(Pose { at, turn }, tex, 1.0, out);
+        }
+        if let Some(tex) = stack.paper {
+            let a = phase(80.0, 380.0);
+            let p = poses.paper;
+            let at = Placed {
+                x: p.at.x - 170.0 * a,
+                y: p.at.y + 60.0 * a,
+                ..p.at
+            };
+            let turn = p.turn - 38f32.to_radians() * a;
+            draw_pose(Pose { at, turn }, tex, 1.0 - a, out);
+        }
+        if let Some(tex) = stack.band {
+            let a = phase(0.0, 320.0);
+            let b = poses.band;
+            let w = b.at.w * (1.0 - 0.5 * a);
+            let at = Placed {
+                x: b.at.x + (b.at.w - w) / 2.0 + 240.0 * a,
+                y: b.at.y - 110.0 * a,
+                w,
+                h: b.at.h,
+            };
+            let turn = b.turn + 55f32.to_radians() * a;
+            draw_pose(Pose { at, turn }, tex, 1.0 - a, out);
+        }
+        self.draw_folder_title(m.folder, phase(900.0, 200.0), out);
     }
 
     pub fn face_cart(&self, shelf: usize, index: usize) -> Option<&Cart> {
@@ -1492,14 +3267,32 @@ impl App {
     pub fn shed_faces(&mut self) -> Vec<TexId> {
         let neighbours = self.neighbour_shelves();
         let mut shed = std::mem::take(&mut self.orphaned);
-        for (at, (_, shelf)) in self.shelves.iter_mut().enumerate() {
-            let keep = if at == self.shelf_at {
+        let mut stacked = Vec::new();
+        for (at, (_, shelf)) in self.shelves.iter().enumerate() {
+            let shown = if at == self.shelf_at {
                 shelf.around(FACE_KEEP)
             } else if neighbours.contains(&at) {
                 shelf.on_screen()
             } else {
                 Vec::new()
             };
+            stacked.extend(shown.into_iter().filter_map(|i| shelf.folder_at(i)));
+        }
+        let stacked: Vec<(usize, Vec<usize>)> = stacked
+            .into_iter()
+            .map(|f| (f, self.stack_indices(f)))
+            .collect();
+        for (at, (_, shelf)) in self.shelves.iter_mut().enumerate() {
+            let mut keep = if at == self.shelf_at {
+                shelf.around(FACE_KEEP)
+            } else if neighbours.contains(&at) {
+                shelf.on_screen()
+            } else {
+                Vec::new()
+            };
+            if let Some((_, picks)) = stacked.iter().find(|(f, _)| *f == at) {
+                keep.extend(picks);
+            }
             for i in 0..shelf.carts.len() {
                 if !keep.contains(&i) {
                     shed.extend(shelf.take_face(i));
@@ -1543,11 +3336,32 @@ impl App {
     }
 
     pub fn source_rect(&self) -> [f32; 4] {
+        if self.tall_game().is_some() {
+            let [x0, y0, x1, y1] = self.picture_rect();
+            return [x0, y0, x1 - x0, y1 - y0];
+        }
         video_mode::source_rect(self.platform, self.video_mode)
     }
 
+    /// A Game Boy picture on a 4:3 panel takes the panel's full height: its own shape when
+    /// actual, the whole panel when stretched. Its bezels frame it from the sides only. The TV
+    /// consoles take their own 4:3 path instead (`tv_fit`).
+    pub fn tall_game(&self) -> Option<f32> {
+        if self.platform == Platform::Gba || self.platform.on_a_tv() || !self.framed_panel() {
+            return None;
+        }
+        let (w, h) = self.platform.picture();
+        Some(match self.video_mode {
+            VideoMode::Actual => w as f32 / h as f32,
+            VideoMode::Stretch => f32::INFINITY,
+        })
+    }
+
+    /// L1 and R1 are Slot's picture keys on a console without shoulder buttons (Game Boy, NES);
+    /// on the GBA and the Super Nintendo they are the game's L and R.
     fn slot_owns_the_shoulders(&self) -> bool {
-        matches!(self.phase, Phase::Playing { .. }) && self.platform != Platform::Gba
+        matches!(self.phase, Phase::Playing { .. })
+            && !GameButton::of(self.platform).contains(&GameButton::L)
     }
 
     pub fn taken_buttons(&self) -> Vec<Btn> {
@@ -1637,8 +3451,16 @@ impl App {
         }
     }
 
+    /// The shown row bound to the same button as `row`; a hidden one, such as the SNES X/Y on a
+    /// card with no SNES games, takes no button.
     pub fn clash(&self, row: QuickRow) -> Option<QuickRow> {
-        self.binding_table().clash(row)
+        let hidden = self.hidden_rows();
+        if hidden.contains(&row) {
+            return None;
+        }
+        self.binding_table()
+            .clash(row)
+            .filter(|other| !hidden.contains(other))
     }
 
     pub fn binding_table(&self) -> crate::input::Table {
@@ -1656,6 +3478,7 @@ impl App {
             || self.repair_prompt()
             || self.shutting_down();
         let shelf = matches!(self.phase, Phase::Shelf)
+            && self.games.is_none()
             && self.core_picker.is_none()
             && !self.repair_prompt
             && self.reset_prompt.is_none();
@@ -1843,7 +3666,7 @@ impl App {
         let (Some(root), Phase::Playing { cart }) = (self.root.clone(), &self.phase) else {
             return;
         };
-        let written = video_mode::write_video_mode(&root, cart, mode);
+        let written = video_mode::write_video_mode(&root, cart, self.platform, mode);
         if let Err(e) = &written {
             eprintln!("slot: video: could not write video_mode.txt: {e}");
         }
@@ -1891,10 +3714,12 @@ impl App {
     }
 
     pub fn picture_rect(&self) -> [f32; 4] {
-        let (w, h) = self.platform.picture();
-        let (sw, sh) = (slot_gfx::SRC_W as f32, slot_gfx::SRC_H as f32);
-        let (x, y) = ((sw - w as f32) / 2.0, (sh - h as f32) / 2.0);
-        [x / sw, y / sh, (x + w as f32) / sw, (y + h as f32) / sh]
+        crate::video_mode::picture_uv(self.platform)
+    }
+
+    /// How a TV console's 4:3 picture sits on the panel; None for the handhelds.
+    pub fn tv_fit(&self) -> Option<slot_gfx::TvFit> {
+        crate::video_mode::tv_fit(self.playing_platform(), self.video_mode)
     }
 
     pub fn may_load_state(&self) -> bool {
@@ -1976,6 +3801,7 @@ impl App {
     pub fn set_power(&mut self, mut power: Power) {
         power.set_backlight(self.state.brightness);
         self.headphones = power.headphones();
+        power.route_audio(self.headphones);
         self.hud.set_headphones(self.headphones);
         let secs = power.now();
         if matches!(self.phase, Phase::SetClock { .. }) || secs < CLOCK_FLOOR {
@@ -2061,6 +3887,7 @@ impl App {
             Platform::Gba => self.state.shader_gba,
             Platform::Gb => self.state.shader_gb,
             Platform::Gbc => self.state.shader_gbc,
+            Platform::Nes | Platform::Snes => Shader::Off,
         }
     }
 
@@ -2077,6 +3904,7 @@ impl App {
             Platform::Gba => self.state.colour_correction_gba,
             Platform::Gb => self.state.colour_correction_gb,
             Platform::Gbc => self.state.colour_correction_gbc,
+            Platform::Nes | Platform::Snes => false,
         }
     }
 
@@ -2278,8 +4106,17 @@ impl App {
 
     pub fn apply(&mut self, action: Action) {
         self.track_held_dir(action);
+        self.pressed_at = self.now();
+        if self.slept_idle && matches!(self.phase, Phase::Doze { .. }) && action != Action::LidClose
+        {
+            self.slept_idle = false;
+            return self.wake();
+        }
         match action {
-            Action::LidClose => return self.doze(),
+            Action::LidClose => {
+                eprintln!("slot: doze: the lid closed");
+                return self.doze();
+            }
             Action::LidOpen => return self.wake(),
             Action::PowerPress => {
                 if self.link_active() {
@@ -2343,12 +4180,26 @@ impl App {
             }
             return;
         }
+        if let Some(game) = self.game_delete.clone() {
+            match action {
+                Action::GbaDown(Btn::X) => {
+                    self.forget_game_delete();
+                    self.delete_game(&game);
+                }
+                Action::GbaDown(Btn::B) => self.forget_game_delete(),
+                _ => {}
+            }
+            return;
+        }
         if action == Action::RepairCard {
             self.repair_prompt = self.repair_offered();
             return;
         }
         if self.adjust(action) {
             return;
+        }
+        if action == Action::GameSwitcher {
+            return self.game_switcher();
         }
         match action {
             Action::GbaUp(Btn::Left) => self.shelf_mut().release_left(),
@@ -2366,6 +4217,17 @@ impl App {
         let now = self.now();
         match self.phase {
             Phase::Shelf => match action {
+                _ if self.folder_moving().is_some() => {}
+                _ if self.games.is_some() => self.games_input(action),
+                _ if self.folder_menu.is_some() => self.folder_menu_input(action),
+                _ if self.report_open() => self.report_input(action),
+                _ if self.extras_menu_shown() => self.extras_menu_input(action),
+                Action::GbaDown(Btn::Start) if self.can_open_extras_menu() => {
+                    self.open_extras_menu()
+                }
+                Action::GbaDown(Btn::Start) if self.selected_folder().is_some() => {
+                    self.open_folder_menu()
+                }
                 Action::GbaDown(Btn::Start) if self.core_picker.is_none() => {
                     self.open_core_picker()
                 }
@@ -2375,6 +4237,14 @@ impl App {
                 Action::Favorite => self.toggle_favorite(),
                 Action::GbaDown(Btn::Up) => self.jump_letter(-1),
                 Action::GbaDown(Btn::Down) => self.jump_letter(1),
+                _ if self.on_extras() && self.extra_motion.is_some() => {}
+                Action::ShelfLeft | Action::GbaDown(Btn::Left) if self.on_extras() => {
+                    self.extra_pos -= 1
+                }
+                Action::ShelfRight | Action::GbaDown(Btn::Right) if self.on_extras() => {
+                    self.extra_pos += 1
+                }
+                Action::GbaDown(Btn::A) | Action::Insert if self.on_extras() => self.open_extra(),
                 Action::ShelfLeft | Action::GbaDown(Btn::Left) => self.shelf_mut().hold_left(now),
                 Action::ShelfRight | Action::GbaDown(Btn::Right) => {
                     self.shelf_mut().hold_right(now)
@@ -2382,11 +4252,16 @@ impl App {
                 Action::QuickMenu => self.open_quick_menu(),
                 Action::GbaDown(Btn::A) => self.play_held = Some(now),
                 Action::GbaUp(Btn::A) => {
-                    if self.play_held.take().is_some() {
+                    if self.play_held.take().is_some() && !self.open_folder() {
                         self.insert(!self.state.eject_save);
                     }
                 }
-                Action::Insert => self.insert(!self.state.eject_save),
+                Action::Insert => {
+                    if !self.open_folder() {
+                        self.insert(!self.state.eject_save)
+                    }
+                }
+                Action::GbaDown(Btn::B) => self.close_folder(),
                 _ => {}
             },
             Phase::Inserting { .. } if action == Action::Eject => self.eject(),
@@ -2472,6 +4347,9 @@ impl App {
     }
 
     fn in_game_menu_input(&mut self, row: QuickRow, action: Action) {
+        if row == QuickRow::CheatList {
+            return self.cheat_list_input(action);
+        }
         let hidden = self.in_game_hidden();
         let hidden = &hidden[..];
         if row.binds() {
@@ -2503,6 +4381,7 @@ impl App {
         match row {
             QuickRow::Resume => self.in_game_menu = None,
             QuickRow::States => self.open_states(),
+            QuickRow::Cheats => self.open_cheats(),
             QuickRow::ExitGame => self.eject(),
             _ => {
                 if let Some(child) = row.child() {
@@ -2585,6 +4464,10 @@ impl App {
             | QuickRow::GbPalette
             | QuickRow::Rumble
             | QuickRow::LeftStick
+            | QuickRow::GbaCore
+            | QuickRow::GbCore
+            | QuickRow::NesCore
+            | QuickRow::SnesCore
             | QuickRow::Theme
             | QuickRow::Recents
             | QuickRow::ShowTitles
@@ -2613,6 +4496,8 @@ impl App {
             | QuickRow::GameRight
             | QuickRow::GameA
             | QuickRow::GameB
+            | QuickRow::GameX
+            | QuickRow::GameY
             | QuickRow::GameSelect
             | QuickRow::GameStart
             | QuickRow::GameL
@@ -2632,7 +4517,13 @@ impl App {
             | QuickRow::ScShaderBack
             | QuickRow::ScFastForward
             | QuickRow::ScRewind
-            | QuickRow::LidOff => {}
+            | QuickRow::LidOff
+            | QuickRow::AutoSleep
+            | QuickRow::DimScreen
+            | QuickRow::Picture
+            | QuickRow::SwitcherGames
+            | QuickRow::Cheats
+            | QuickRow::CheatList => {}
         }
     }
 
@@ -2689,6 +4580,58 @@ impl App {
         }
         if row == QuickRow::ShowTitles {
             self.state.show_titles = !self.state.show_titles;
+            self.persist();
+            return;
+        }
+        if let QuickRow::GbaCore | QuickRow::GbCore | QuickRow::NesCore | QuickRow::SnesCore = row {
+            return self.flip_default_core(row);
+        }
+        if row == QuickRow::SwitcherGames {
+            let n = SWITCHER_GAMES.len();
+            let at = SWITCHER_GAMES
+                .iter()
+                .position(|c| *c == self.state.switcher_games)
+                .unwrap_or(n - 1);
+            self.state.switcher_games = SWITCHER_GAMES[if right {
+                (at + 1) % n
+            } else {
+                (at + n - 1) % n
+            }];
+            self.persist();
+            return;
+        }
+        if row == QuickRow::Picture {
+            // Two choices, so either way flips it.
+            return self.set_picture(match self.video_mode {
+                VideoMode::Stretch => VideoMode::Actual,
+                VideoMode::Actual => VideoMode::Stretch,
+            });
+        }
+        if row == QuickRow::DimScreen {
+            let n = DIM_SCREEN_S.len();
+            let at = DIM_SCREEN_S
+                .iter()
+                .position(|s| *s == self.state.dim_screen_s)
+                .unwrap_or(0);
+            self.state.dim_screen_s = DIM_SCREEN_S[if right {
+                (at + 1) % n
+            } else {
+                (at + n - 1) % n
+            }];
+            self.persist();
+            return;
+        }
+        if row == QuickRow::AutoSleep {
+            let n = AUTO_SLEEP_MIN.len();
+            let at = AUTO_SLEEP_MIN
+                .iter()
+                .position(|m| *m == self.state.auto_sleep_min)
+                .unwrap_or(0);
+            self.state.auto_sleep_min = AUTO_SLEEP_MIN[if right {
+                (at + 1) % n
+            } else {
+                (at + n - 1) % n
+            }];
             self.persist();
             return;
         }
@@ -2799,6 +4742,8 @@ impl App {
             | QuickRow::GameRight
             | QuickRow::GameA
             | QuickRow::GameB
+            | QuickRow::GameX
+            | QuickRow::GameY
             | QuickRow::GameSelect
             | QuickRow::GameStart
             | QuickRow::GameL
@@ -2821,7 +4766,17 @@ impl App {
             | QuickRow::Controls
             | QuickRow::ControlsShelf
             | QuickRow::ControlsInGame
-            | QuickRow::LidOff => return,
+            | QuickRow::LidOff
+            | QuickRow::GbaCore
+            | QuickRow::GbCore
+            | QuickRow::NesCore
+            | QuickRow::SnesCore
+            | QuickRow::AutoSleep
+            | QuickRow::DimScreen
+            | QuickRow::Picture
+            | QuickRow::SwitcherGames
+            | QuickRow::Cheats
+            | QuickRow::CheatList => return,
         }
         self.persist();
     }
@@ -2839,6 +4794,8 @@ impl App {
             Platform::Gba => (&mut self.state.shader_gba, &Shader::GBA[..]),
             Platform::Gb => (&mut self.state.shader_gb, &Shader::GB[..]),
             Platform::Gbc => (&mut self.state.shader_gbc, &Shader::GB[..]),
+            // The TV consoles have no LCD shaders to step through.
+            Platform::Nes | Platform::Snes => return,
         };
         *shader = shader.step(choices, right);
         let said = match *shader {
@@ -2891,6 +4848,7 @@ impl App {
                 Platform::Gba => QuickRow::GbaColourCorrection,
                 Platform::Gb => QuickRow::GbColourCorrection,
                 Platform::Gbc => QuickRow::GbcColourCorrection,
+                Platform::Nes | Platform::Snes => return true,
             };
             self.change_setting(row, true);
             let said = match self.colour_correction() {
@@ -3001,6 +4959,12 @@ impl App {
         self.state.brightness
     }
 
+    /// The share of full brightness the picture is drawn at: under 1 only for a step darker
+    /// than the backlight reaches.
+    pub fn picture_dim(&self) -> f32 {
+        self.power.as_ref().map_or(1.0, |p| p.picture_dim())
+    }
+
     pub fn volume(&self) -> u8 {
         self.level()
     }
@@ -3061,6 +5025,21 @@ impl App {
 
     pub fn update(&mut self, dt: f32) {
         self.clock += dt as f64 * 1000.0;
+        let (target, omega) = (self.extra_pos as f32, EXTRA_OMEGA);
+        let accel = -2.0 * omega * self.extra_vel - omega * omega * (self.extra_scroll - target);
+        self.extra_vel += accel * dt;
+        self.extra_scroll += self.extra_vel * dt;
+        self.finish_extra_motion();
+        self.finish_report();
+        self.track_play(dt);
+        if let Some(FolderMenu {
+            closing: Some(at), ..
+        }) = self.folder_menu
+        {
+            if self.now().saturating_sub(at) as f32 >= FOLDER_MENU_CLOSE_MS {
+                self.folder_menu = None;
+            }
+        }
         if self.name_pending && self.shelf_platform.face.is_some() {
             self.name_pending = false;
             self.shelf_named = Some(self.now());
@@ -3131,28 +5110,37 @@ impl App {
                 self.link_loaded = None;
             }
             self.record_cart(seated);
+            if std::mem::take(&mut self.games_after_eject) && self.on_shelf() {
+                self.open_games();
+            }
+            if std::mem::take(&mut self.states_after_insert) && self.seated().is_some() {
+                self.open_polaroids();
+            }
         }
         self.step_screen(dt);
         self.step_footer(dt);
     }
 
     fn step_screen(&mut self, dt: f32) {
+        self.straight_in &= matches!(self.phase, Phase::Inserting { .. });
         self.blank_s = match self.blank_panel() {
             Some(_) => self.blank_s + dt,
             None => 0.0,
         };
         let lit = matches!(self.phase, Phase::Playing { .. } | Phase::Polaroids { .. })
-            || self.powering_up();
+            || self.powering_up()
+            || self.straight_in;
         let step = if lit {
             dt / POWER_ON_S
         } else {
             -dt / POWER_OFF_S
         };
         self.screen = (self.screen + step).clamp(0.0, 1.0);
-        let docked = matches!(
-            self.phase,
-            Phase::Shelf | Phase::Inserting { .. } | Phase::Ejecting { .. }
-        );
+        let docked = !self.straight_in
+            && matches!(
+                self.phase,
+                Phase::Shelf | Phase::Inserting { .. } | Phase::Ejecting { .. }
+            );
         let sliding = matches!(
             self.phase,
             Phase::Inserting { .. }
@@ -3357,14 +5345,21 @@ impl App {
     }
 
     fn timers(&mut self) {
+        self.remember_settled_shelf();
         self.play_hold();
         self.repeat_held_dir();
-        let offer = self.undo_label();
+        let offer = self.undo_label().filter(|_| self.games.is_none());
         if let Some(p) = &mut self.polaroids {
             p.set_undo(offer);
         }
         if self.doze_expired() {
             self.on_doze_timeout();
+        }
+        self.sleep_when_settled();
+        if self.idle_expired() {
+            eprintln!("slot: doze: Auto Sleep, no input for a while");
+            self.doze();
+            self.slept_idle = true;
         }
         if self.now() >= self.autosave_at {
             self.autosave();
@@ -3401,6 +5396,9 @@ impl App {
             let on = self.power.as_ref().is_some_and(|p| p.headphones());
             if on != self.headphones {
                 self.headphones = on;
+                if let Some(power) = &mut self.power {
+                    power.route_audio(on);
+                }
                 self.hud.set_headphones(on);
                 let now = self.now();
                 self.hud
@@ -3435,6 +5433,9 @@ impl App {
                 self.end_link();
             }
         }
+        // Last, after Auto Sleep and the headphones poll: a doze lights the screen back up for
+        // the lid, and a new output's volume follows its route in the same frame.
+        self.sync_power_saving();
     }
 
     pub fn led_state(&self) -> LedState {
@@ -3511,6 +5512,8 @@ impl App {
         }
         let old = self.shelves[at].1.restock(carts);
         self.orphaned.extend(old);
+        // Faces still being built belong to the carts that stood here before.
+        self.shelf_epoch += 1;
         let empty = self.shelves[at].1.carts.is_empty();
         if self.shelf_at == at && empty {
             self.shelf_at = self.next_shelf(1).unwrap_or(0);
@@ -3518,13 +5521,41 @@ impl App {
     }
 
     fn toggle_favorite(&mut self) {
+        if self.selected_folder().is_some() {
+            return;
+        }
         let Some(cart) = self.shelf().carts.get(self.shelf().index) else {
             return;
         };
         let (platform, stem) = (cart.platform, cart.stem.clone());
-        self.state.toggle_favorite(platform, &stem);
+        let added = self.state.toggle_favorite(platform, &stem);
+        let toast = match added {
+            true => Toast::FavoriteAdded,
+            false => Toast::FavoriteRemoved,
+        };
+        self.hud.toast(toast, self.now());
         let shelf_at = self.shelf_at;
         self.restock_favorites();
+        // Taking away the last favourite empties its shelf: rather than land on whichever shelf
+        // comes next, stay on that game where it lives.
+        if shelf_at == FAVORITES_AT && self.shelves[FAVORITES_AT].1.carts.is_empty() {
+            let home = (0..self.shelves.len())
+                .filter(|at| self.shelves[*at].0.platform().is_some())
+                .find_map(|at| {
+                    let shelf = &self.shelves[at].1;
+                    (0..shelf.carts.len())
+                        .find(|i| {
+                            shelf.folder_at(*i).is_none()
+                                && shelf.carts[*i].platform == platform
+                                && shelf.carts[*i].stem == stem
+                        })
+                        .map(|i| (at, i))
+                });
+            if let Some((at, i)) = home {
+                self.shelf_at = at;
+                self.shelves[at].1.select(i);
+            }
+        }
         if self.shelf_at != shelf_at {
             self.shelf_platform = slot_ui::Printed::default();
             self.slot_letter = None;
@@ -3690,6 +5721,9 @@ impl App {
         if self.delete_prompt {
             return self.draw_prompt(&self.delete_faces, out);
         }
+        if self.game_delete.is_some() && !self.game_delete_faces.is_empty() {
+            return self.draw_prompt(&self.game_delete_faces, out);
+        }
         match &self.phase {
             Phase::SetClock {
                 picker, from_menu, ..
@@ -3723,6 +5757,13 @@ impl App {
                 canvas: self.canvas(),
             }
             .draw(out),
+            Phase::Shelf if self.games.is_some() => {
+                self.draw_background(out);
+                if let Some(p) = &self.polaroids {
+                    p.draw_print(self.canvas(), out);
+                    self.draw_photo_chrome(p, out);
+                }
+            }
             Phase::Shelf => {
                 self.draw_background(out);
                 match (self.core_picker_shown(), self.selected_stem()) {
@@ -3737,6 +5778,26 @@ impl App {
                             dim,
                             out,
                         );
+                        draw_empty_slot(self.canvas(), self.slot_faces, out);
+                    }
+                    _ if self.folder_menu.is_some() => {
+                        self.draw_folder_menu(out);
+                        draw_empty_slot(self.canvas(), self.slot_faces, out);
+                    }
+                    _ if self.extras_menu_shown() => self.draw_extras_menu(out),
+                    _ if self.on_extras() => {
+                        self.draw_extras(out);
+                        self.draw_report(out);
+                        draw_empty_slot(self.canvas(), self.slot_faces, out);
+                        draw_slot_name(
+                            self.canvas(),
+                            self.shelf_platform,
+                            self.slot_name_alpha(),
+                            out,
+                        );
+                    }
+                    _ if self.folder_moving().is_some() => {
+                        self.draw_folder_motion(out);
                         draw_empty_slot(self.canvas(), self.slot_faces, out);
                     }
                     _ => {
@@ -3754,6 +5815,7 @@ impl App {
                             self.title_alpha(),
                             out,
                         );
+                        self.draw_folder_title(self.shelf_at, 1.0, out);
                     }
                 }
                 draw_footer(
@@ -3779,6 +5841,7 @@ impl App {
                 self.draw_background(out);
                 self.chrome(cart, 0.0, out);
             }
+            Phase::Inserting { .. } if self.straight_in => self.draw_powering(out),
             Phase::Inserting { cart, resumed, .. } => {
                 if !resumed {
                     self.draw_background(out);
@@ -3811,14 +5874,7 @@ impl App {
                 if let Some(p) = &self.polaroids {
                     p.draw_photo(self.canvas(), out);
                     self.draw_sp_strip(out);
-                    p.draw_chrome(
-                        self.canvas(),
-                        self.battery,
-                        self.battery_percent,
-                        self.hud_bolt,
-                        self.shelf_clock,
-                        out,
-                    );
+                    self.draw_photo_chrome(p, out);
                 }
             }
             Phase::Doze { .. } => {
@@ -3839,29 +5895,34 @@ impl App {
         if let (Some(row), Phase::Playing { .. }, true) =
             (self.in_game_menu_shown(), &self.phase, self.screen >= 1.0)
         {
-            let hidden = self.in_game_hidden();
-            let bound = self.bound_faces();
-            QuickMenu {
-                row,
-                bound: Some(&bound),
-                description: self.description(row),
-                hidden: &hidden,
-                values: QuickRow::ALL.map(|r| self.quick_value(r)),
-                clock: None,
-                wallpaper: None,
-                faces: self.quick_menu_faces.as_ref(),
-                ground: None,
-                palette: self.quick_palette_faces,
-                gba_bezel: None,
-                gb_bezel: None,
-                gbc_bezel: None,
-                bezel: self.quick_bezel_faces[bezel_slot(self.playing_platform())],
-                over_game: true,
-                footer_legends: false,
-                footer_top: OUT_H as f32 - MOUTH_H + self.menu_footer_offset(),
-                canvas: self.canvas(),
+            let footer_top = OUT_H as f32 - MOUTH_H + self.menu_footer_offset();
+            if row == QuickRow::CheatList {
+                self.draw_cheat_list(footer_top, out);
+            } else {
+                let hidden = self.in_game_hidden();
+                let bound = self.bound_faces();
+                QuickMenu {
+                    row,
+                    bound: Some(&bound),
+                    description: self.description(row),
+                    hidden: &hidden,
+                    values: QuickRow::ALL.map(|r| self.quick_value(r)),
+                    clock: None,
+                    wallpaper: None,
+                    faces: self.quick_menu_faces.as_ref(),
+                    ground: None,
+                    palette: self.quick_palette_faces,
+                    gba_bezel: None,
+                    gb_bezel: None,
+                    gbc_bezel: None,
+                    bezel: self.quick_bezel_faces[bezel_slot(self.playing_platform())],
+                    over_game: true,
+                    footer_legends: false,
+                    footer_top,
+                    canvas: self.canvas(),
+                }
+                .draw(out);
             }
-            .draw(out);
             if row.page() != QuickRow::PLAY_SCREEN {
                 slot_ui::draw_corners(
                     self.canvas(),
@@ -3882,6 +5943,17 @@ impl App {
             self.draw_game_menu(menu, out);
         }
         self.hud.draw(self.canvas(), self.now(), out);
+    }
+
+    fn draw_photo_chrome(&self, p: &Polaroids, out: &mut Vec<Draw>) {
+        p.draw_chrome(
+            self.canvas(),
+            self.battery,
+            self.battery_percent,
+            self.hud_bolt,
+            self.shelf_clock,
+            out,
+        );
     }
 
     pub fn screen_shake(&self) -> f32 {
@@ -4237,9 +6309,15 @@ impl App {
         let progress = picker.openness(now);
         let lift = lift_of(progress);
         let (rest, scale) = self.shelf().selected_at(self.canvas());
-        let shelf = shelf_cart_at(rest, scale);
-        let board = board_from(self.canvas(), shelf, progress);
-        let zoom = board_zoom(board);
+        let platform = self
+            .shelf()
+            .carts
+            .get(self.shelf().index)
+            .map_or(Platform::Gba, |c| c.platform);
+        let open = open_layout(platform);
+        let shelf = shelf_cart_of(platform, rest, scale);
+        let board = open.board_from(self.canvas(), shelf, progress);
+        let zoom = open.zoom(board);
         let ready = self.core_faces_ready();
 
         if ready {
@@ -4263,8 +6341,14 @@ impl App {
                     alpha: 1.0,
                 });
             }
-            for (i, tex) in self.core_socket_faces.iter().copied().enumerate() {
-                let (x, y) = on_board(board, SOCKET_U[i], SOCKET_V);
+            let sockets = picker
+                .pair()
+                .map(|c| self.core_socket_faces.get(c.index()).copied());
+            for (i, tex) in sockets.into_iter().enumerate() {
+                let Some(tex) = tex else {
+                    continue;
+                };
+                let (x, y) = open.on_board(board, open.socket_u[i], open.socket_v);
                 out.push(Draw::Tex {
                     x: x.round(),
                     y: y.round(),
@@ -4276,10 +6360,11 @@ impl App {
             }
 
             let chip = picker.chip(now);
-            let u = CHIP_U[0] + (CHIP_U[1] - CHIP_U[0]) * chip.across;
+            let u = open.chip_u[0] + (open.chip_u[1] - open.chip_u[0]) * chip.across;
             if chip.lift > 0.0 {
                 if let Some(tex) = self.core_chip_shadow_face {
-                    let (cx, cy) = on_board(board, u + 19.0, CHIP_V + 29.4);
+                    let (cx, cy) =
+                        open.on_board(board, u + open.shadow_at.0, open.chip_v + open.shadow_at.1);
                     let (w, h) = (SHADOW_W as f32 * zoom, SHADOW_H as f32 * zoom);
                     out.push(Draw::Tex {
                         x: cx - w / 2.0,
@@ -4296,7 +6381,7 @@ impl App {
                 None => self.core_blank_chip_face,
             };
             if let Some(tex) = face {
-                let (x, y) = on_board(board, u, CHIP_V - HOP_LIFT * chip.lift);
+                let (x, y) = open.on_board(board, u, open.chip_v - open.hop * chip.lift);
                 let body = Placed {
                     x: x + chip.shake,
                     y,
@@ -4317,12 +6402,13 @@ impl App {
         }
 
         if let Some(tex) = self.core_chip_shadow_face {
-            let (lid, _) = lid_from(self.canvas(), shelf, progress);
-            let k = lid.w / lid_at(self.canvas(), 1.0).0.w;
-            let (w, h) = (LID_SHADOW_W * k, LID_SHADOW_H * k);
+            let (lid, _) = open.lid_from(self.canvas(), shelf, progress);
+            let k = lid.w / open.lid.w;
+            let (shadow_w, shadow_h, drop) = open.lid_shadow;
+            let (w, h) = (shadow_w * k, shadow_h * k);
             out.push(Draw::Tex {
                 x: lid.x + (lid.w - w) / 2.0,
-                y: lid.y + lid.h + LID_SHADOW_DROP * k - h / 2.0,
+                y: lid.y + lid.h + drop * k - h / 2.0,
                 w,
                 h,
                 tex,
@@ -4332,8 +6418,8 @@ impl App {
 
         if ready {
             if let Some(tex) = self.core_lid_face {
-                let (lid, turn) = lid_from(self.canvas(), shelf, progress);
-                let at = grown(lid, TURN_PAD as f32 * lid.w / CART_W as f32);
+                let (lid, turn) = open.lid_from(self.canvas(), shelf, progress);
+                let at = grown(lid, TURN_PAD as f32 * lid.w / cart_box(platform).0 as f32);
                 out.push(Draw::Turned {
                     x: at.x,
                     y: at.y,
@@ -4348,7 +6434,7 @@ impl App {
             .selected_stem()
             .and_then(|stem| self.shelf().find(stem))
         {
-            let (lid, turn) = lid_from(self.canvas(), shelf, progress);
+            let (lid, turn) = open.lid_from(self.canvas(), shelf, progress);
             out.push(Draw::Turned {
                 x: lid.x,
                 y: lid.y,
@@ -4360,28 +6446,10 @@ impl App {
             });
         }
 
-        if let [cancel, swap, choose] = self.core_legend_faces.as_slice() {
-            let seen = |w: u32| w.saturating_sub(HINT_EDGE) as f32;
-            let swap_x = self.canvas().centred(seen(swap.1));
-            for (tex, w, x) in [
-                (
-                    cancel.0,
-                    cancel.1,
-                    swap_x - CORE_LEGEND_GAP - seen(cancel.1),
-                ),
-                (swap.0, swap.1, swap_x),
-                (choose.0, choose.1, swap_x + seen(swap.1) + CORE_LEGEND_GAP),
-            ] {
-                out.push(Draw::Tex {
-                    x: x.round(),
-                    y: CORE_LEGEND_Y,
-                    w: w as f32,
-                    h: MOUTH_H,
-                    tex,
-                    alpha: lift,
-                });
-            }
-        }
+        self.draw_played_plate(platform, board, lift, out);
+
+        // Cancel, Swap, Choose and Delete in a centred row.
+        self.draw_legend_row(&self.core_legend_faces, &[true; 4], lift, out);
     }
 
     fn draw_game_menu(&self, menu: GameMenu, out: &mut Vec<Draw>) {
@@ -4521,8 +6589,12 @@ impl App {
     }
 
     fn insert(&mut self, clean: bool) {
-        if !self.on_shelf() {
+        if !self.on_shelf() || self.selected_folder().is_some() {
             return;
+        }
+        if self.in_folder() {
+            let (at, stem) = (self.shelf_at, self.selected_stem().map(str::to_string));
+            self.change_prefs(at, |p| p.last = stem);
         }
         let at = self.shelf().index;
         let Some(cart) = self.shelf_mut().carts.get_mut(at).map(|c| {
@@ -4579,6 +6651,7 @@ impl App {
         };
         self.end_link();
         self.close_game_menu();
+        self.states_after_insert = false;
         self.flush_eject(&cart);
         self.pending = None;
         self.refusal = None;
@@ -4614,6 +6687,12 @@ impl App {
                 self.state.cart = None;
                 self.state.cart_platform = None;
                 self.card_writes.ok("eject");
+                if let (Some(_), Some(thumb)) = (&state, snapshot.thumb()) {
+                    let ring = StateRing::new(root, self.platform, self.core, stem);
+                    if let Err(e) = ring.write_resume_thumb(&thumb) {
+                        eprintln!("slot: eject: resume thumb: {e}");
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("slot: eject: {e}");
@@ -4628,6 +6707,9 @@ impl App {
         }
         self.close_game_menu();
         self.core_picker = None;
+        self.close_games();
+        self.games_after_eject = false;
+        self.states_after_insert = false;
         if matches!(self.phase, Phase::Doze { .. }) {
             return;
         }
@@ -4643,6 +6725,7 @@ impl App {
         self.polaroids = None;
         self.phase = Phase::Doze { cart };
         self.dozed_at = self.now();
+        self.dozed_wall = self.power.as_ref().map(|p| p.now());
         self.radio.ask(RadioJob::Cool);
         if let Some(power) = &mut self.power {
             power.on_close();
@@ -4666,6 +6749,7 @@ impl App {
         if !matches!(self.phase, Phase::Doze { .. }) {
             return;
         }
+        eprintln!("slot: power off: asleep for the Lid Power Off time");
         self.begin_power_off();
     }
 
@@ -4675,7 +6759,10 @@ impl App {
         }
         match self.phase {
             Phase::Doze { .. } => self.wake(),
-            _ => self.doze(),
+            _ => {
+                eprintln!("slot: doze: the power key was tapped");
+                self.doze()
+            }
         }
     }
 
@@ -4698,6 +6785,7 @@ impl App {
         if self.shutting_down() {
             return;
         }
+        self.end_play_session(true);
         self.remember_shelf();
         self.restarting = true;
         self.act_at = self.now() + SHUTDOWN_SHOW_MS;
@@ -4705,22 +6793,29 @@ impl App {
     }
 
     fn open_core_picker(&mut self) {
+        if self.selected_folder().is_some() {
+            return;
+        }
         let Some(root) = self.root.clone() else {
             return;
         };
         let Some(cart) = self.shelf().carts.get(self.shelf().index) else {
             return;
         };
-        if cart.platform != Platform::Gba {
+        // The picker offers the platform's two cores, so it opens only when the alternative is
+        // installed (gpSP ships with Slot, so the GBA always has it).
+        let alternative = Core::pair(cart.platform)[1];
+        if cart.platform != Platform::Gba && !crate::core::installed(&root, alternative) {
             return;
         }
-        let seat = slot_store::core_for(&root, &cart.stem);
+        let seat = slot_store::core_for_cart(&root, cart);
         let now = self.now();
-        let mut picker = CorePicker::open(seat, now);
+        let mut picker = CorePicker::open(seat, Core::pair(cart.platform), now);
         if self.core_faces_ready() {
             picker.start(now);
         }
         self.core_picker = Some(picker);
+        self.ask_played_plate();
         self.shelf_mut().release_hold();
         self.play_held = None;
     }
@@ -4737,6 +6832,10 @@ impl App {
             Action::GbaDown(Btn::Right) | Action::ShelfRight => Press::Right,
             Action::GbaDown(Btn::A) => Press::Keep,
             Action::GbaDown(Btn::B) => Press::Back,
+            Action::GbaDown(Btn::Y) => {
+                self.game_delete = self.selected_game();
+                return;
+            }
             _ => return,
         };
         let now = self.now();
@@ -4750,6 +6849,12 @@ impl App {
     }
 
     fn open_game_menu(&mut self) {
+        // Link play is behind the `link` feature (on by default for PC runs and tests, off in the
+        // Flip build, `--no-default-features --features device`): without it the Select+Menu
+        // chord does nothing at all, and the radio is never warmed.
+        if !cfg!(feature = "link") {
+            return;
+        }
         if self.game_menu.is_some() {
             return;
         }
@@ -4794,6 +6899,9 @@ impl App {
     }
 
     fn game_menu_shortcut(&mut self) {
+        if !cfg!(feature = "link") {
+            return;
+        }
         let Some(client_id) = self.link_client_id() else {
             return self.open_game_menu();
         };
@@ -5052,7 +7160,60 @@ impl App {
         }
     }
 
+    /// Counts play while a game runs with no menu over it, and writes it to the card a minute at
+    /// a time and when the game stops, so a session survives a crash but for its last minute.
+    fn track_play(&mut self, dt: f32) {
+        let game = match &self.phase {
+            Phase::Playing { .. } if self.in_game_menu.is_none() && self.game_menu.is_none() => {
+                self.seated_cart().map(|c| Recent {
+                    platform: c.platform,
+                    stem: c.stem.clone(),
+                })
+            }
+            _ => None,
+        };
+        match (&mut self.play_session, game) {
+            (Some((_, playing, unlogged)), Some(game)) if *playing == game => {
+                *unlogged += dt;
+                if *unlogged >= PLAY_LOG_SECS {
+                    self.log_play(false);
+                }
+            }
+            (_, game) => {
+                self.end_play_session(false);
+                let now = self.power.as_ref().map_or_else(system_secs, |p| p.now());
+                self.play_session = game.map(|g| (now, g, 0.0));
+            }
+        }
+    }
+
+    /// Writes the play gathered so far; `now` waits for it, for a power off that is coming.
+    fn log_play(&mut self, now: bool) {
+        let (Some(root), Some((start, game, unlogged))) = (&self.root, &mut self.play_session)
+        else {
+            return;
+        };
+        let secs = std::mem::take(unlogged).round() as u32;
+        self.extras_stale = true;
+        let (root, start, game) = (root.clone(), *start, game.clone());
+        let write = move || {
+            if let Err(e) = slot_store::log_play(&root, start, secs, &game) {
+                eprintln!("slot: activity: {e}");
+            }
+        };
+        match now {
+            true => write(),
+            false => drop(std::thread::spawn(write)),
+        }
+    }
+
+    fn end_play_session(&mut self, now: bool) {
+        self.log_play(now);
+        self.play_session = None;
+    }
+
     fn begin_power_off(&mut self) {
+        self.end_play_session(true);
         if self.powering_off {
             return;
         }
@@ -5075,6 +7236,56 @@ impl App {
         }
         self.flush_resume();
         self.begin_power_off();
+    }
+
+    /// Auto Sleep: idle long enough on the shelf or in a game, with nothing else on screen, and
+    /// not on a computer's cable, where a long copy shows as no input at all. Asked last, so the
+    /// USB state is read only once the time is up.
+    fn idle_expired(&self) -> bool {
+        let min = self.state.auto_sleep_min;
+        min > 0
+            && !self.link_active()
+            && matches!(self.phase, Phase::Shelf | Phase::Playing { .. })
+            && self.now().saturating_sub(self.pressed_at) >= min as Millis * 60_000
+            && !self.power.as_ref().is_some_and(|p| p.on_a_computer())
+    }
+
+    /// The screen is off for a shut lid or Auto Sleep.
+    pub fn dozing(&self) -> bool {
+        matches!(self.phase, Phase::Doze { .. })
+    }
+
+    /// A few seconds after the lid shuts, sleeps for real until it opens, the power key is
+    /// pressed, or the lid's power-off time is up, when it powers off as before.
+    fn sleep_when_settled(&mut self) {
+        let settled = self.now().saturating_sub(self.dozed_at) >= SUSPEND_AFTER_MS;
+        if !self.dozing() || self.slept_idle || self.no_suspend || !settled || self.link_active() {
+            return;
+        }
+        let timeout = match (self.state.lid_off_min, &self.power) {
+            (Some(min), _) => min as i64 * 60,
+            (None, Some(power)) => power.timeout().as_secs() as i64,
+            (None, None) => return,
+        };
+        self.settle_saves();
+        let Some(power) = &mut self.power else {
+            return;
+        };
+        let since = self.dozed_wall.unwrap_or_else(|| power.now());
+        let left = (timeout - (power.now() - since)).max(1);
+        if !power.suspend(Some(std::time::Duration::from_secs(left as u64))) {
+            self.no_suspend = true;
+            return;
+        }
+        if power.now() - since >= timeout {
+            eprintln!("slot: power off: slept for the Lid Power Off time");
+            return self.begin_power_off();
+        }
+        let headphones = power.headphones();
+        power.route_audio(headphones);
+        // Woken by the lid or the power key, whose press follows as input; if it was neither, the
+        // next settle sleeps again with what is left of the time.
+        self.dozed_at = self.now();
     }
 
     fn doze_expired(&self) -> bool {
@@ -5339,9 +7550,17 @@ impl App {
         self.push_hint_faces();
     }
 
+    pub fn set_games_legend_faces(&mut self, faces: Vec<TexId>) {
+        self.games_legend_faces = faces;
+        self.push_hint_faces();
+    }
+
     fn push_hint_faces(&mut self) {
-        let mut faces = self.legend_faces.clone();
-        faces.extend(self.undo_face);
+        let mut faces = match self.games {
+            Some(_) => self.games_legend_faces.clone(),
+            None => self.legend_faces.clone(),
+        };
+        faces.extend(self.undo_face.filter(|_| self.games.is_none()));
         if let Some(p) = &mut self.polaroids {
             p.set_hint_faces(faces);
         }
@@ -5349,6 +7568,10 @@ impl App {
 
     pub fn set_icon_faces(&mut self, faces: Vec<TexId>) {
         self.hud.set_icons(faces);
+    }
+
+    pub fn set_percent_faces(&mut self, faces: Vec<(TexId, u32, u32)>) {
+        self.hud.set_percent_faces(faces);
     }
 
     pub fn set_toast_faces(&mut self, faces: Vec<TexId>) {
@@ -5412,23 +7635,163 @@ impl App {
         }
     }
 
-    pub fn set_polaroid_faces(&mut self, faces: Vec<TexId>) {
+    pub fn set_polaroid_faces(
+        &mut self,
+        faces: Vec<TexId>,
+        game_boy: Vec<bool>,
+        sizes: Vec<(u32, u32)>,
+    ) {
         if let Some(p) = &mut self.polaroids {
             p.set_faces(faces);
+            p.set_game_boy_faces(game_boy);
+            p.set_face_sizes(sizes);
         }
     }
 
-    pub fn polaroid_stamp(&self) -> Option<&str> {
-        self.polaroids
-            .as_ref()
-            .and_then(|p| p.selected())
-            .map(|e| e.stamp.as_str())
+    pub fn polaroid_title(&self, now: &str) -> String {
+        let Some(p) = &self.polaroids else {
+            return String::new();
+        };
+        let Some(game) = self.games.as_ref().and_then(|g| g.get(p.index)) else {
+            return p.title(now);
+        };
+        let title = self
+            .carts()
+            .find(|c| c.platform == game.platform && c.stem == game.stem)
+            .map_or_else(|| game.stem.clone(), slot_ui::label_text);
+        match p.selected().filter(|e| !e.stamp.is_empty()) {
+            Some(e) => format!("{title} - {}", Polaroids::relative_time(&e.stamp, now)),
+            None => title,
+        }
     }
 
-    pub fn polaroid_title(&self, now: &str) -> String {
-        self.polaroids
-            .as_ref()
-            .map_or_else(String::new, |p| p.title(now))
+    pub fn polaroids_open(&self) -> bool {
+        self.polaroids.is_some()
+    }
+
+    pub fn games_open(&self) -> bool {
+        self.games.is_some()
+    }
+
+    fn game_switcher(&mut self) {
+        match self.phase {
+            Phase::Shelf if self.games.is_some() => self.close_games(),
+            Phase::Shelf => self.open_games(),
+            Phase::Playing { .. } | Phase::Polaroids { .. } if self.link_active() => self.refuse(),
+            Phase::Playing { .. } | Phase::Polaroids { .. } => {
+                self.close_polaroids();
+                self.eject();
+                self.games_after_eject = matches!(self.phase, Phase::Ejecting { .. });
+            }
+            _ => {}
+        }
+    }
+
+    fn open_games(&mut self) {
+        if self.shutting_down() || self.link_active() || self.core_picker.is_some() {
+            return self.refuse();
+        }
+        let Some(root) = self.root.clone() else {
+            return self.refuse();
+        };
+        let (games, entries): (Vec<Recent>, Vec<StateEntry>) = self
+            .state
+            .recents
+            .iter()
+            .filter_map(|r| {
+                let cart = self
+                    .carts()
+                    .find(|c| c.platform == r.platform && c.stem == r.stem)?;
+                Some((r.clone(), game_entry(&root, cart)))
+            })
+            .take(GAMES_MAX.min(self.state.switcher_games as usize))
+            .unzip();
+        if games.is_empty() {
+            return self.refuse();
+        }
+        self.play_held = None;
+        self.shelf_mut().release_hold();
+        self.polaroids = Some(Polaroids::games(entries));
+        self.games = Some(games);
+        self.push_hint_faces();
+    }
+
+    fn close_games(&mut self) {
+        if self.games.take().is_some() {
+            self.polaroids = None;
+        }
+    }
+
+    fn games_input(&mut self, action: Action) {
+        match action {
+            Action::ShelfLeft | Action::GbaDown(Btn::Left) => self.flick(Polaroids::left),
+            Action::ShelfRight | Action::GbaDown(Btn::Right) => self.flick(Polaroids::right),
+            Action::GbaDown(Btn::A) | Action::Insert => self.resume_game(false),
+            Action::GbaDown(Btn::X) => self.resume_game(true),
+            Action::GbaDown(Btn::Y) => self.forget_game(),
+            Action::GbaDown(Btn::B) | Action::QuickMenu => self.close_games(),
+            _ => {}
+        }
+    }
+
+    /// Takes the chosen game off the switcher and the recent games; the game, its saves and its
+    /// states stay on the card.
+    fn forget_game(&mut self) {
+        let index = self.polaroids.as_ref().map_or(0, |p| p.index);
+        let Some(game) = self
+            .games
+            .as_mut()
+            .filter(|g| index < g.len())
+            .map(|g| g.remove(index))
+        else {
+            return;
+        };
+        eprintln!(
+            "slot: switcher: removed {} from the recent games",
+            game.stem
+        );
+        self.state.recents.retain(|g| *g != game);
+        self.persist();
+        self.restock_recents();
+        if let Some(p) = &mut self.polaroids {
+            p.remove_selected();
+        }
+        if self.games.as_ref().is_some_and(|g| g.is_empty()) {
+            self.close_games();
+        }
+    }
+
+    fn resume_game(&mut self, states: bool) {
+        let index = self.polaroids.as_ref().map_or(0, |p| p.index);
+        let Some(game) = self.games.as_ref().and_then(|g| g.get(index)).cloned() else {
+            return;
+        };
+        let Some((at, i)) = self.find_seat(&game.stem, Some(game.platform)) else {
+            return self.refuse();
+        };
+        if states && !self.game_has_states(&game) {
+            return self.refuse();
+        }
+        self.close_games();
+        self.go_to_shelf(at);
+        self.shelf_mut().select(i);
+        self.insert(!self.state.eject_save);
+        self.states_after_insert = states && matches!(self.phase, Phase::Inserting { .. });
+    }
+
+    fn game_has_states(&self, game: &Recent) -> bool {
+        self.root.as_ref().is_some_and(|root| {
+            let core = match self
+                .carts()
+                .find(|c| c.platform == game.platform && c.stem == game.stem)
+            {
+                Some(cart) => slot_store::core_for_cart(root, cart),
+                None => slot_store::core_for_platform(root, &game.stem, game.platform),
+            };
+            StateRing::new(root, game.platform, core, &game.stem)
+                .list()
+                .is_ok_and(|l| !l.is_empty())
+        })
     }
 
     pub fn set_polaroid_title_face(&mut self, face: TexId) {
@@ -5436,6 +7799,24 @@ impl App {
             p.set_title_face(Some(face));
         }
     }
+}
+
+fn game_entry(root: &Path, cart: &Cart) -> StateEntry {
+    let core = slot_store::core_for_cart(root, cart);
+    let ring = StateRing::new(root, cart.platform, core, &cart.stem);
+    if let Some(thumb) = ring.resume_thumb() {
+        return StateEntry {
+            stamp: String::new(),
+            state: PathBuf::new(),
+            thumb,
+        };
+    }
+    let newest = ring.list().ok().and_then(|l| l.into_iter().next());
+    newest.unwrap_or_else(|| StateEntry {
+        stamp: String::new(),
+        state: PathBuf::new(),
+        thumb: cart.label.clone().unwrap_or_default(),
+    })
 }
 
 fn trusted_write(
@@ -5536,9 +7917,55 @@ fn free_stamp(ring: &StateRing, now: i64) -> String {
 }
 
 fn bezel_slot(platform: Platform) -> usize {
-    match platform {
-        Platform::Gba => 0,
-        Platform::Gb => 1,
-        Platform::Gbc => 2,
+    Platform::ALL
+        .iter()
+        .position(|p| *p == platform)
+        .unwrap_or(0)
+}
+
+fn lerp_placed(a: Placed, b: Placed, t: f32) -> Placed {
+    Placed {
+        x: a.x + (b.x - a.x) * t,
+        y: a.y + (b.y - a.y) * t,
+        w: a.w + (b.w - a.w) * t,
+        h: a.h + (b.h - a.h) * t,
     }
+}
+
+/// Where the loop stands, in rows below the first shown: gliding from where it was towards `to`.
+fn glide_at((from, at): (f32, Millis), to: f32, now: Millis) -> f32 {
+    let t = ease((now.saturating_sub(at) as f32 / FOLDER_LOOP_GLIDE_MS).min(1.0));
+    from + (to - from) * t
+}
+
+/// A sheet of the folder menu to draw: the settings, or the name entry.
+pub enum FolderSheet {
+    Menu {
+        paper: Platform,
+        name: String,
+        rows: Vec<slot_ui::MenuRow>,
+        first: usize,
+    },
+    Entry {
+        paper: Platform,
+        name: String,
+        lower: bool,
+    },
+}
+
+const MONTHS: [&str; 12] = [
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+];
+
+/// The week the receipt prints.
+pub struct ExtrasWeek {
+    pub range: String,
+    pub days: [u32; 7],
+    pub labels: [String; 7],
+    pub total: String,
+}
+
+/// Fast out, slow to rest, like the design's cubic-bezier(.2, .7, .2, 1).
+fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t).powi(3)
 }

@@ -1,0 +1,4 @@
+commit=d9d6cd06382d1ced30de34d56d3609452323dab1
+source=https://github.com/libretro/gambatte-libretro/archive/d9d6cd06382d1ced30de34d56d3609452323dab1.tar.gz
+recipe=make -f Makefile.libretro platform=unix
+device_cflags=-mcpu=cortex-a55 -O2 -DNDEBUG

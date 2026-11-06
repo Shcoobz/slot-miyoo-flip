@@ -15,6 +15,8 @@ pub enum Btn {
     Start,
     Select,
     Menu,
+    L3,
+    R3,
     VolUp,
     VolDown,
     Power,

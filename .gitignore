@@ -22,3 +22,9 @@
 # Parallel implementation worktrees, never content.
 /.worktrees
 .superpowers/
+/dist-flip
+/target-x86
+/target-x86b
+
+# The ready-made Flip card is committed whole, its .so cores included (see README-FLIP.md).
+!/flip-card/**

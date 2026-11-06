@@ -57,6 +57,10 @@ fn every_option_slot_sets_is_one_the_core_declares() {
     let _g = common::core_lock();
     let mut ran = 0;
     for which in Core::ALL {
+        // The NES and SNES cores get no options from Slot.
+        if which.runs(Platform::Nes) || which.runs(Platform::Snes) {
+            continue;
+        }
         let path = dylib_for(which);
         if !path.exists() {
             eprintln!("no {} dylib on this host, skipping", which.as_str());
@@ -68,6 +72,9 @@ fn every_option_slot_sets_is_one_the_core_declares() {
                     .into_iter()
                     .flat_map(|c| Platform::ALL.map(|p| (c, p)))
                 {
+                    if !which.runs(platform) {
+                        continue;
+                    }
                     for palette in
                         std::iter::once(None).chain(slot_store::GbColors::all().map(Some))
                     {

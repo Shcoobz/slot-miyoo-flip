@@ -28,6 +28,10 @@ pub trait Surface {
     fn window_size(&self) -> (u32, u32);
     fn swap(&mut self) -> Result<(), GfxError>;
     fn proc_address(&self, name: &str) -> *const c_void;
+    /// True when `swap` itself holds the loop to the panel's refresh, so no pacer is needed.
+    fn paces_itself(&self) -> bool {
+        false
+    }
 }
 
 pub fn fit_scale(win_w: u32, win_h: u32) -> u32 {
