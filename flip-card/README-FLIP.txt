@@ -44,6 +44,10 @@ Games
   Games/GBA     .gba files
   Games/GB      .gb files
   Games/GBC     .gbc files
+  Games/NES     .nes files
+  Games/SNES    .sfc and .smc files
+  (Create the NES and SNES folders yourself; slot only makes the Game Boy
+  ones.)
 
   Games must be unzipped: slot does not read .zip or .7z files.
   A file loose at the top of Games/ is never shown; put it in the folder
@@ -55,7 +59,8 @@ Games
   folders are not read.
 
 Labels (cart art)
-  Labels/GBA/<game>.png, Labels/GB/<game>.png, Labels/GBC/<game>.png
+  Labels/GBA/<game>.png, Labels/GB/<game>.png, Labels/GBC/<game>.png,
+  Labels/NES/<game>.png, Labels/SNES/<game>.png
   Named exactly like the game file, for example
       Games/GBA/Metroid Fusion.gba  ->  Labels/GBA/Metroid Fusion.png
   See Labels/README.txt for sizes.

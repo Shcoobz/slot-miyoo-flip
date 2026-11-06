@@ -26,5 +26,5 @@
 /target-x86
 /target-x86b
 
-# The ready-made Flip card is committed whole, its .so cores included (see README-FLIP.md).
+# The ready-made Flip card is committed whole, its .so cores included (see README.md).
 !/flip-card/**
